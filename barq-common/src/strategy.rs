@@ -1,6 +1,7 @@
 use serde::{Deserialize, Serialize};
 
 use crate::graph::NetworkGraph;
+use crate::algorithms::dijkstra::Dijkstra;
 
 /// The `Strategy` trait defines an interface for routing strategies used within Barq.
 ///
@@ -14,21 +15,49 @@ pub trait Strategy {
     fn route(&self, input: &RouteInput) -> RouteOutput;
 }
 
+#[derive(Debug, Clone, Serialize, Deserialize)] 
+pub struct Route {
+    pub id: String,
+    pub channel: String,
+    pub delay: u64,
+    pub fee: u64,
+}
+
+#[derive(Debug, Clone, Serialize, Deserialize)] 
+pub struct RouteHop {
+    pub id: String,
+    pub channel: String,
+    pub delay: u64,
+    pub amount_msat: u64,
+}
+
+impl RouteHop {
+    pub fn new(id: String, channel: String, delay: u64, amount_msat: u64) -> Self {
+        RouteHop { id, channel, delay, amount_msat }
+    }
+}
+
+
+impl Route {
+    pub fn new(id: String, channel: String, delay: u64, fee: u64) -> Self {
+        Route { id, channel, delay, fee }
+    }
+}
+
 /// Represents input data required for routing a payment
 #[derive(Serialize, Deserialize)]
 pub struct RouteInput {
-    pub source: String,
-    pub destination: String,
-    pub amount: u64,
-    pub graph: NetworkGraph,
+    pub src_pubkey: String,
+    pub dest_pubkey: String,
+    pub amount_msat: u64,
+    pub graph: NetworkGraph
     // TODO: Add more fields as needed
 }
 
 /// Represents the output of a routing strategy
 #[derive(Serialize, Deserialize)]
 pub struct RouteOutput {
-    pub path: Vec<String>,
-    pub total_fees: u64,
+    pub path: Vec<RouteHop>
     // TODO: Add more fields as needed
 }
 

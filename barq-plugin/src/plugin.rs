@@ -11,7 +11,8 @@ use clightningrpc_plugin::{commands::RPCCommand, errors::PluginError, plugin::Pl
 use clightningrpc_plugin_macros::{plugin, rpc_method};
 
 use crate::methods;
-use barq_common::strategy::Router;
+use barq_common::strategy::{Router, Strategy};
+use barq_common::algorithms::dijkstra::Dijkstra;
 
 /// Barq Plugin State
 ///
@@ -76,6 +77,12 @@ fn on_init(plugin: &mut Plugin<State>) -> json::Value {
     let config = plugin.configuration.clone().unwrap();
     let rpc_file = format!("{}/{}", config.lightning_dir, config.rpc_file);
 
+    let strategies: Vec<Box<dyn Strategy>> = vec![
+        Box::new(Dijkstra)
+    ];
+
+    let shared_router = Arc::new(Router::new(strategies));
+    plugin.state.router = Some(shared_router);
     plugin.state.cln_rpc_path = Some(rpc_file);
 
     json::json!({})

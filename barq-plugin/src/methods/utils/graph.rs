@@ -1,4 +1,5 @@
 use serde::Deserialize;
+use serde::Serialize;
 
 use clightningrpc_plugin::{error, errors::PluginError, plugin::Plugin};
 
@@ -18,17 +19,18 @@ struct ChannelInfo {
     source: String,
     destination: String,
     short_channel_id: String,
-    amount_msat: String,
-    // TODO: Add more fields as needed
+    amount_msat: u64,
+    delay: u64,
+    base_fee_millisatoshi: u64,
+    fee_per_millionth: u64
 }
 
 /// Function to build the network graph using the plugin state.
-pub fn build_network_graph(plugin: &mut Plugin<State>) -> Result<NetworkGraph, PluginError> {
-    let state = &plugin.state;
+pub fn build_network_graph(state: &State) -> Result<NetworkGraph, PluginError> {
 
     // Call the `listchannels` method to get the network information
-    let response: ListChannelsResponse = state
-        .call("listchannels", ())
+    let response : ListChannelsResponse = state
+        .call("listchannels", serde_json::json!({}))
         .map_err(|err| error!("Error calling `listchannels`: {err}"))?;
 
     let mut graph = NetworkGraph::new();
@@ -46,6 +48,7 @@ pub fn build_network_graph(plugin: &mut Plugin<State>) -> Result<NetworkGraph, P
         // Convert amount_msat to u64
         let amount_msat = channel
             .amount_msat
+            .to_string()
             .trim_end_matches("msat")
             .parse::<u64>()
             .unwrap_or(0);
@@ -56,6 +59,9 @@ pub fn build_network_graph(plugin: &mut Plugin<State>) -> Result<NetworkGraph, P
             &channel.source,
             &channel.destination,
             amount_msat,
+            channel.delay,
+            channel.base_fee_millisatoshi,
+            channel.fee_per_millionth
         );
         graph.add_edge(edge);
     }

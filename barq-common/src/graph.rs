@@ -43,17 +43,31 @@ pub struct Edge {
     pub source: String,
     pub destination: String,
     pub capacity: u64,
+    pub delay: u64,
+    pub base_fee_millisatoshi: u64,
+    pub fee_per_millionth: u64,
     // TODO: Add more fields as needed, such as fees, channel policies, etc.
 }
 
 impl Edge {
     /// Creates a new edge (channel).
-    pub fn new(id: &str, source: &str, destination: &str, capacity: u64) -> Self {
+    pub fn new(
+        id: &str, 
+        source: &str,
+        destination: &str,
+        capacity: u64, 
+        delay: u64,
+        base_fee_millisatoshi: u64, 
+        fee_per_millionth: u64
+    ) -> Self {
         Edge {
             id: id.to_string(),
             source: source.to_string(),
             destination: destination.to_string(),
             capacity,
+            delay,
+            base_fee_millisatoshi,
+            fee_per_millionth
         }
     }
 
@@ -66,8 +80,8 @@ impl Edge {
 /// Represents the network graph of nodes and edges.
 #[derive(Debug, Serialize, Deserialize, Clone)]
 pub struct NetworkGraph {
-    nodes: HashMap<String, Node>,
-    edges: HashMap<String, Edge>,
+    pub nodes: HashMap<String, Node>,
+    pub edges: HashMap<String, Edge>,
 }
 
 impl Default for NetworkGraph {
