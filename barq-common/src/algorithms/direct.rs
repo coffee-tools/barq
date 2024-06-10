@@ -1,9 +1,14 @@
 use crate::{
-    graph::NetworkGraph,
     strategy::{RouteInput, RouteOutput, Strategy},
 };
 
 pub struct Direct;
+
+impl Default for Direct {
+    fn default() -> Self {
+        Self::new()
+    }
+}
 
 impl Direct {
     pub fn new() -> Self {

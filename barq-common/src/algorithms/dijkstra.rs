@@ -1,9 +1,14 @@
 use crate::{
-    graph::NetworkGraph,
     strategy::{RouteInput, RouteOutput, Strategy},
 };
 
 pub struct Dijkstra;
+
+impl Default for Dijkstra {
+    fn default() -> Self {
+        Self::new()
+    }
+}
 
 impl Dijkstra {
     pub fn new() -> Self {

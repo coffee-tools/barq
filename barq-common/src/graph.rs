@@ -70,6 +70,12 @@ pub struct NetworkGraph {
     edges: HashMap<String, Edge>,
 }
 
+impl Default for NetworkGraph {
+    fn default() -> Self {
+        Self::new()
+    }
+}
+
 impl NetworkGraph {
     /// Creates a new, empty network graph.
     pub fn new() -> Self {
