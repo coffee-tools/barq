@@ -4,7 +4,7 @@ use serde_json::Value;
 
 use clightningrpc_plugin::{error, errors::PluginError, plugin::Plugin};
 
-use barq_common::{graph::NetworkGraph, strategy::RouteInput};
+use barq_common::strategy::RouteInput;
 
 use crate::{methods::utils::graph::build_network_graph, plugin::State};
 
@@ -36,7 +36,7 @@ pub fn barq_pay(plugin: &mut Plugin<State>, request: Value) -> Result<Value, Plu
     let router = state.router();
 
     // TODO: use CLN RPC to query any information needed
-    let cln_response = state
+    state
         .call("getinfo", ())
         .map_err(|err| error!("Error calling CLN RPC method: {err}"))?;
 
