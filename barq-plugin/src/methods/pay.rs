@@ -51,7 +51,8 @@ pub struct BarqPayResponse {
 struct Bolt11 {
     payee: String,
     amount_msat: u64,
-    payment_hash: String
+    payment_hash: String,
+    payment_secret: String
 }
 
 #[derive(Debug, Deserialize)]
@@ -95,7 +96,8 @@ pub fn barq_pay(plugin: &mut Plugin<State>, request: Value) -> Result<Value, Plu
 
     let payRequest: Value = serde_json::json!({
         "route": output.path,
-        "payment_hash": b11.payment_hash
+        "payment_hash": b11.payment_hash,
+        "payment_secret": b11.payment_secret
     });
 
     let payResponse: SentPaymentResponse = state
