@@ -1,18 +1,20 @@
 //! Barq Plugin implementation
-
 use std::sync::Arc;
 
 use json::Value;
 use serde::{de::DeserializeOwned, Serialize};
 use serde_json as json;
+use std::collections::HashMap;
 
 use clightningrpc::LightningRPC;
 use clightningrpc_plugin::{commands::RPCCommand, errors::PluginError, plugin::Plugin};
 use clightningrpc_plugin_macros::{plugin, rpc_method};
 
 use crate::methods;
-use barq_common::strategy::{Router, Strategy};
-use barq_common::algorithms::dijkstra::Dijkstra;
+use barq_common::{
+    algorithms::{dijkstra::Dijkstra, direct::Direct},
+    strategy::{Router, Strategy},
+};
 
 /// Barq Plugin State
 ///
@@ -77,9 +79,9 @@ fn on_init(plugin: &mut Plugin<State>) -> json::Value {
     let config = plugin.configuration.clone().unwrap();
     let rpc_file = format!("{}/{}", config.lightning_dir, config.rpc_file);
 
-    let strategies: Vec<Box<dyn Strategy>> = vec![
-        Box::new(Dijkstra)
-    ];
+    let mut strategies: Vec<Box<dyn Strategy>> = Vec::new();
+    strategies.push(Box::new(Direct));
+    strategies.push(Box::new(Dijkstra));
 
     let shared_router = Arc::new(Router::new(strategies));
     plugin.state.router = Some(shared_router);

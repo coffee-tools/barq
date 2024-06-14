@@ -1,7 +1,7 @@
 use serde::{Deserialize, Serialize};
 
 use crate::graph::NetworkGraph;
-use crate::algorithms::dijkstra::Dijkstra;
+use std::collections::HashMap;
 
 /// The `Strategy` trait defines an interface for routing strategies used within Barq.
 ///
@@ -12,10 +12,12 @@ pub trait Strategy {
     fn can_apply(&self, input: &RouteInput) -> bool;
 
     /// Route the payment using the strategy
-    fn route(&self, input: &RouteInput) -> RouteOutput;
+    /// return error if execution unsuccessful
+    fn route(&self, input: &RouteInput) -> Result<RouteOutput, String>;
 }
 
-#[derive(Debug, Clone, Serialize, Deserialize)] 
+/// Represents a route between two nodes directly connected with each other. 
+#[derive(Debug, Clone, Serialize, Deserialize)]
 pub struct Route {
     pub id: String,
     pub channel: String,
@@ -23,7 +25,10 @@ pub struct Route {
     pub fee: u64,
 }
 
-#[derive(Debug, Clone, Serialize, Deserialize)] 
+/// Represents a single hop in a route between two nodes. The difference between `Route` and `RouteHop` is that `Route` stores the delay
+/// and fee for the corresponding channel, while `RouteHop` stores the total delay and total amount to be sent corresponding
+/// to that channel.
+#[derive(Debug, Clone, Serialize, Deserialize)]
 pub struct RouteHop {
     pub id: String,
     pub channel: String,
@@ -33,14 +38,23 @@ pub struct RouteHop {
 
 impl RouteHop {
     pub fn new(id: String, channel: String, delay: u64, amount_msat: u64) -> Self {
-        RouteHop { id, channel, delay, amount_msat }
+        RouteHop {
+            id,
+            channel,
+            delay,
+            amount_msat,
+        }
     }
 }
 
-
 impl Route {
     pub fn new(id: String, channel: String, delay: u64, fee: u64) -> Self {
-        Route { id, channel, delay, fee }
+        Route {
+            id,
+            channel,
+            delay,
+            fee,
+        }
     }
 }
 
@@ -50,15 +64,14 @@ pub struct RouteInput {
     pub src_pubkey: String,
     pub dest_pubkey: String,
     pub amount_msat: u64,
-    pub graph: NetworkGraph
-    // TODO: Add more fields as needed
+    pub cltv: u64,
+    pub graph: NetworkGraph, // TODO: Add more fields as needed
 }
 
 /// Represents the output of a routing strategy
 #[derive(Serialize, Deserialize)]
 pub struct RouteOutput {
-    pub path: Vec<RouteHop>
-    // TODO: Add more fields as needed
+    pub path: Vec<RouteHop>, // TODO: Add more fields as needed
 }
 
 /// Represents a payment router within Barq.
@@ -70,6 +83,7 @@ pub struct RouteOutput {
 /// The main goal of the `Router` struct is to simplify payment routing in Core Lightning.
 /// It acts as a central hub for coordinating different routing strategies, making it easy to integrate
 /// new algorithms into the routing process.
+
 pub struct Router {
     /// A collection of routing strategies that can be used to route payments
     pub strategies: Vec<Box<dyn Strategy>>,
@@ -85,21 +99,30 @@ impl Router {
     }
 
     /// Execute the routing process using the best strategy based on input
-    pub fn execute(&self, input: &RouteInput) -> RouteOutput {
-        // TODO: For now, we only allow using one strategy for the whole payment
-        //       Later, we can implement a more complex logic to select the best strategy
-        //       where we can use multiple strategies for different parts of the payment
-        //       and get the result
-        let strategy = self.select_best_strategy(input);
-        strategy.route(input)
+    pub fn execute(&self, input: &RouteInput) -> Result<RouteOutput, String> {
+        // Attempt to find the best strategy for the given input
+        let best_strategy = self.select_best_strategy(input)
+        .ok_or_else(|| "Cannot find a strategy to implement for routing".to_string())?;
+
+        best_strategy.route(input)
+
+        // If a strategy is found, use it to route the input, otherwise return None
     }
 
     /// Select the best strategy based on input
-    fn select_best_strategy(&self, input: &RouteInput) -> &Box<dyn Strategy> {
+    fn select_best_strategy(&self, input: &RouteInput) -> Option<&Box<dyn Strategy>> {
         // TODO: Implement logic to select the best strategy based on input
         //       and whether the strategy can be applied to the input
-
+    
         // For now, we will just use the first strategy as a placeholder
-        self.strategies.first().expect("No strategies available")
+    
+        for strategy in &self.strategies {
+            if strategy.can_apply(input) {
+                return Some(strategy);
+            }
+        }
+    
+        // If no strategy can be applied, return None
+        None
     }
 }

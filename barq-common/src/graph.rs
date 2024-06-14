@@ -40,8 +40,8 @@ impl Node {
 #[derive(Debug, Serialize, Deserialize, Clone)]
 pub struct Edge {
     pub id: String,
-    pub source: String,
-    pub destination: String,
+    pub node1: String,
+    pub node2: String,
     pub capacity: u64,
     pub delay: u64,
     pub base_fee_millisatoshi: u64,
@@ -52,22 +52,22 @@ pub struct Edge {
 impl Edge {
     /// Creates a new edge (channel).
     pub fn new(
-        id: &str, 
-        source: &str,
-        destination: &str,
-        capacity: u64, 
+        id: &str,
+        node1: &str,
+        node2: &str,
+        capacity: u64,
         delay: u64,
-        base_fee_millisatoshi: u64, 
-        fee_per_millionth: u64
+        base_fee_millisatoshi: u64,
+        fee_per_millionth: u64,
     ) -> Self {
         Edge {
             id: id.to_string(),
-            source: source.to_string(),
-            destination: destination.to_string(),
+            node1: node1.to_string(),
+            node2: node2.to_string(),
             capacity,
             delay,
             base_fee_millisatoshi,
-            fee_per_millionth
+            fee_per_millionth,
         }
     }
 
@@ -80,8 +80,8 @@ impl Edge {
 /// Represents the network graph of nodes and edges.
 #[derive(Debug, Serialize, Deserialize, Clone)]
 pub struct NetworkGraph {
-    pub nodes: HashMap<String, Node>,
-    pub edges: HashMap<String, Edge>,
+    nodes: HashMap<String, Node>,
+    edges: HashMap<String, Edge>,
 }
 
 impl Default for NetworkGraph {
@@ -108,11 +108,8 @@ impl NetworkGraph {
     pub fn add_edge(&mut self, edge: Edge) {
         self.edges.insert(edge.id.clone(), edge.clone());
         // Update the nodes to include this channel.
-        if let Some(source_node) = self.nodes.get_mut(&edge.clone().source) {
+        if let Some(source_node) = self.nodes.get_mut(&edge.clone().node1) {
             source_node.add_channel(&edge.id);
-        }
-        if let Some(destination_node) = self.nodes.get_mut(&edge.clone().destination) {
-            destination_node.add_channel(&edge.id);
         }
     }
 
@@ -150,8 +147,8 @@ impl NetworkGraph {
         }
 
         for edge in self.edges.values() {
-            let source_index = node_indices.get(&edge.source).unwrap();
-            let destination_index = node_indices.get(&edge.destination).unwrap();
+            let source_index = node_indices.get(&edge.node1).unwrap();
+            let destination_index = node_indices.get(&edge.node2).unwrap();
             graph.add_edge(*source_index, *destination_index, edge.capacity);
         }
 
@@ -188,16 +185,16 @@ mod tests {
 
     #[test]
     fn test_create_edge() {
-        let edge = Edge::new("channel1", "node1", "node2", 1000);
+        let edge = Edge::new("channel1", "node1", "node2", 1000, 6, 1, 10);
         assert_eq!(edge.id, "channel1");
-        assert_eq!(edge.source, "node1");
-        assert_eq!(edge.destination, "node2");
+        assert_eq!(edge.node1, "node1");
+        assert_eq!(edge.node2, "node2");
         assert_eq!(edge.capacity, 1000);
     }
 
     #[test]
     fn test_set_edge_capacity() {
-        let mut edge = Edge::new("channel1", "node1", "node2", 1000);
+        let mut edge = Edge::new("channel1", "node1", "node2", 1000, 6, 1, 10);
         edge.set_capacity(2000);
         assert_eq!(edge.capacity, 2000);
     }
@@ -216,17 +213,12 @@ mod tests {
         graph.add_node(Node::new("node1"));
         graph.add_node(Node::new("node2"));
 
-        let edge = Edge::new("channel1", "node1", "node2", 1000);
+        let edge = Edge::new("channel1", "node1", "node2", 1000, 6, 1, 10);
         graph.add_edge(edge);
 
         assert!(graph.get_edge("channel1").is_some());
         assert!(graph
             .get_node("node1")
-            .unwrap()
-            .channels
-            .contains(&"channel1".to_string()));
-        assert!(graph
-            .get_node("node2")
             .unwrap()
             .channels
             .contains(&"channel1".to_string()));
