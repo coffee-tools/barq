@@ -12,3 +12,7 @@ log = "0.4"
 
 # Dependencies to visualize the graph
 petgraph = "0.6"
+
+
+# Dependencies to use LDK routing strategy
+lightning = "0.0.123"
