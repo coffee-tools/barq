@@ -12,6 +12,7 @@ fmt:
 
 check:
 	$(CC) test --all
+	cd tests; poetry run pytest . -s -x
 
 clean:
 	$(CC) clean
