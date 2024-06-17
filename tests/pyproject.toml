@@ -1,0 +1,16 @@
+[tool.poetry]
+name = "tests"
+version = "0.1.0"
+description = "Integration testing"
+authors = ["Vincenzo Palazzo <vincenzopalazzodev@gmail.com>"]
+readme = "README.md"
+
+[tool.poetry.dependencies]
+python = ">=3.8,<4.0"
+pytest = "*"
+pyln-client = "^24.5"
+pyln-testing = "^24.5"
+
+[build-system]
+requires = ["poetry-core"]
+build-backend = "poetry.core.masonry.api"

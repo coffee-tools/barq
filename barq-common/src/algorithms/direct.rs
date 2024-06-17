@@ -78,10 +78,8 @@ impl Strategy for Direct {
 #[cfg(test)]
 mod tests {
     use super::*;
-    use crate::{
-        graph::{Edge, NetworkGraph, Node},
-        strategy::Router,
-    };
+    use crate::strategy::Router;
+    use crate::graph::NetworkGraph;
 
     #[test]
     fn test_direct_routing() {
