@@ -1,65 +1,102 @@
-// pub mod network_graph_conversion;
-
 use core::ops::Deref;
+use std::str::FromStr;
 
+use bitcoin::Network;
 use lightning::{
-    ln::channelmanager::ChannelDetails,
+    ln::{
+        channelmanager::ChannelDetails,
+        msgs::{ChannelAnnouncement, ChannelUpdate, UnsignedChannelAnnouncement},
+    },
     routing::{
-        gossip::NetworkGraph as LdkNetworkGraph,
-        router::{find_route, Route},
-        scoring::ScoreLookUp,
+        gossip::{
+            NetworkGraph as LdkNetworkGraph, NetworkUpdate, NetworkUpdate::ChannelUpdateMessage,
+        },
+        router::{find_route, Route, RouteParameters},
+        scoring::{
+            ProbabilisticScorer, ProbabilisticScoringDecayParameters,
+            ProbabilisticScoringFeeParameters, ScoreLookUp,
+        },
     },
     util::{
         logger::{Logger, Record},
         ser::Writeable,
     },
 };
+use secp256k1::PublicKey;
 
 use crate::{
     graph::NetworkGraph,
     strategy::{RouteInput, RouteOutput, Strategy},
 };
 
-pub struct LdkRouter<L, S>
+pub struct LdkRouter<L>
 where
     L: Deref,
-    S: ScoreLookUp,
     L::Target: Logger,
 {
     logger: L,
-    scorer: S,
 }
 
-impl<L, S> LdkRouter<L, S>
+impl<L> LdkRouter<L>
 where
     L: Deref,
-    S: ScoreLookUp,
     L::Target: Logger,
 {
-    pub fn new(logger: L, scorer: S) -> Self {
-        Self { logger, scorer }
+    pub fn new(logger: L) -> Self {
+        Self { logger }
     }
 
-    fn convert_to_ldk_network_graph(graph: &NetworkGraph) -> LdkNetworkGraph<L> {
-        // TODO: Convert NetworkGraph to LDK NetworkGraph
-        unimplemented!()
+    fn convert_to_ldk_network_graph(&self, graph: &NetworkGraph) -> LdkNetworkGraph<L> {
+        let network = Network::Bitcoin;
+        let mut ldk_graph = LdkNetworkGraph::new(network, self.logger);
+
+        for (_, edge) in &graph.edges {
+            let channel = ChannelAnnouncement {
+                node_signature_1: [0; 64],
+                node_signature_2: [0; 64],
+                bitcoin_signature_1: [0; 64],
+                bitcoin_signature_2: [0; 64],
+                contents: UnsignedChannelAnnouncement {
+                    features: Default::default(),
+                    chain_hash: Default::default(),
+                    short_channel_id: Default::default(),
+                    node_id_1: Default::default(),
+                    node_id_2: Default::default(),
+                    bitcoin_key_1: Default::default(),
+                    bitcoin_key_2: Default::default(),
+                },
+            };
+
+            ldk_graph
+                .update_channel_from_announcement(&channel, &None)
+                .unwrap(); // TODO: Handle error
+        }
+
+        ldk_graph
     }
 
-    fn construct_route_params(input: &RouteInput) -> lightning::routing::router::RouteParameters {
+    fn construct_route_params(input: &RouteInput) -> RouteParameters {
         // TODO: Construct RouteParameters from RouteInput
         unimplemented!()
     }
 
     fn convert_route_to_output(route: Route) -> RouteOutput {
+        let total_fees = route.route_params.unwrap().final_value_msat; // TODO: Handle unwrap
+        let mut hops = Vec::new();
+        let route = route.paths[0]; // TODO: Why is this a vector?
+        for hop in route.hops {
+            let hop = hop.short_channel_id.to_string();
+            hops.push(hop);
+        }
+
         // TODO: Convert LDK Route to RouteOutput
         unimplemented!()
     }
 }
 
-impl<L, S> Strategy for LdkRouter<L, S>
+impl<L> Strategy for LdkRouter<L>
 where
-    L: Deref,
-    S: ScoreLookUp,
+    L: Deref + Logger + Copy,
     L::Target: Logger,
 {
     fn can_apply(&self, _input: &RouteInput) -> bool {
@@ -68,11 +105,43 @@ where
     }
 
     fn route(&self, input: &RouteInput) -> RouteOutput {
-        let ldk_graph = Self::convert_to_ldk_network_graph(&input.graph);
+        let our_pubkey = PublicKey::from_str(&input.source).unwrap();
         let route_params = Self::construct_route_params(input);
+        let ldk_graph = Self::convert_to_ldk_network_graph(&input.graph);
+        let scorer = ProbabilisticScorer::new(
+            ProbabilisticScoringDecayParameters::default(),
+            &ldk_graph,
+            self.logger,
+        );
+        let random_seed_bytes = [0; 32];
 
-        // TODO: Implement the logic to find route using LDK using `find_route`
+        let route = find_route(
+            &our_pubkey,
+            &route_params,
+            &ldk_graph,
+            None,
+            &self.logger,
+            &scorer,
+            &ProbabilisticScoringFeeParameters::default(),
+            &random_seed_bytes,
+        )
+        .unwrap(); // TODO: Handle error
 
-        unimplemented!("Implement the logic to find route using LDK using `find_route`");
+        Self::convert_route_to_output(route)
+    }
+}
+
+#[cfg(test)]
+mod tests {
+
+    #[test]
+    fn test_route() {
+
+        /*
+        Use:
+        - https://github.com/lightningdevkit/rust-lightning/blob/main/lightning/src/routing/test_utils.rs#L185
+        - https://github.com/lightningdevkit/rust-lightning/blob/main/lightning/src/routing/router.rs#L3428
+        to write test cases for the `route` method of `LdkRouter`
+         */
     }
 }
