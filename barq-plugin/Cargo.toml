@@ -13,9 +13,8 @@ anyhow = { workspace = true }
 
 # Core lightning-rpc dependencies
 clightningrpc = { git = "https://github.com/laanwj/cln4rust.git" }
-clightningrpc-plugin = { git = "https://github.com/laanwj/cln4rust.git", features = [
-    "log",
-] }
+clightningrpc-common = { git = "https://github.com/laanwj/cln4rust.git" }
+clightningrpc-plugin = { git = "https://github.com/laanwj/cln4rust.git" }
 clightningrpc-plugin-macros = { git = "https://github.com/laanwj/cln4rust.git" }
 
 # Barq dependencies

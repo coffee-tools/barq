@@ -32,7 +32,7 @@
           configureFlags = [ "--disable-rust" "--disable-valgrind" ];
         });
         # Our integration tests required the cln and bitcoind
-        # so in this variable we declare everthin that we need
+        # so in this variable we declare everything that we need
         # for bitcoin and cln
         cln-env-shell = [ clightning pkgs.bitcoind ];
 
