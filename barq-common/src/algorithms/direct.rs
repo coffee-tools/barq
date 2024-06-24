@@ -36,14 +36,18 @@ impl Strategy for Direct {
     fn route(&self, input: &RouteInput) -> Result<RouteOutput, String> {
         // TODO: Implement the routing logic
         let source = input.src_pubkey.clone();
-        let node = input.graph.get_node(&source)
-        .ok_or_else(|| format!("Cannot retrieve node for id {}", &source))?;
+        let node = input
+            .graph
+            .get_node(&source)
+            .ok_or_else(|| format!("Cannot retrieve node for id {}", &source))?;
 
         let mut path: Vec<RouteHop> = Vec::<RouteHop>::new();
 
         for channel in &node.channels {
-            let edge = input.graph.get_edge(channel)
-            .ok_or_else(|| format!("Error retrieving edge for channel {}", channel))?;
+            let edge = input
+                .graph
+                .get_edge(channel)
+                .ok_or_else(|| format!("Error retrieving edge for channel {}", channel))?;
 
             if input.dest_pubkey == edge.node1.clone() || input.dest_pubkey == edge.node2.clone() {
                 let delay = 9;
@@ -85,10 +89,11 @@ mod tests {
             amount_msat: 100,
             graph,
         };
-        let output = router.execute(&input);
+        let output = router.execute(&input).expect("Direct Routing Failed");
         let mut route_path: Vec<RouteHop> = Vec::<RouteHop>::new();
-        let hop = RouteHop::new("B".to_string(), "channel".to_string(), 6, 100);
+        let hop = RouteHop::new("B".to_string(), "channel".to_string(), 9, 100);
         route_path.push(hop);
+        assert_eq!(output.path, route_path);
         // TODO: complete writing tests
     }
 }

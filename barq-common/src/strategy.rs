@@ -16,7 +16,7 @@ pub trait Strategy {
     fn route(&self, input: &RouteInput) -> Result<RouteOutput, String>;
 }
 
-/// Represents a route between two nodes directly connected with each other. 
+/// Represents a route between two nodes directly connected with each other.
 #[derive(Debug, Clone, Serialize, Deserialize)]
 pub struct Route {
     pub id: String,
@@ -28,7 +28,7 @@ pub struct Route {
 /// Represents a single hop in a route between two nodes. The difference between `Route` and `RouteHop` is that `Route` stores the delay
 /// and fee for the corresponding channel, while `RouteHop` stores the total delay and total amount to be sent corresponding
 /// to that channel.
-#[derive(Debug, Clone, Serialize, Deserialize)]
+#[derive(Debug, Clone, Serialize, Deserialize, PartialEq, Eq)]
 pub struct RouteHop {
     pub id: String,
     pub channel: String,
@@ -101,27 +101,26 @@ impl Router {
     /// Execute the routing process using the best strategy based on input
     pub fn execute(&self, input: &RouteInput) -> Result<RouteOutput, String> {
         // Attempt to find the best strategy for the given input
-        let best_strategy = self.select_best_strategy(input)
-        .ok_or_else(|| "Cannot find a strategy to implement for routing".to_string())?;
+        let best_strategy = self
+            .select_best_strategy(input)
+            .ok_or_else(|| "Cannot find a strategy to implement for routing".to_string())?;
 
         best_strategy.route(input)
-
-        // If a strategy is found, use it to route the input, otherwise return None
     }
 
     /// Select the best strategy based on input
     fn select_best_strategy(&self, input: &RouteInput) -> Option<&Box<dyn Strategy>> {
         // TODO: Implement logic to select the best strategy based on input
         //       and whether the strategy can be applied to the input
-    
+
         // For now, we will just use the first strategy as a placeholder
-    
+
         for strategy in &self.strategies {
             if strategy.can_apply(input) {
                 return Some(strategy);
             }
         }
-    
+
         // If no strategy can be applied, return None
         None
     }

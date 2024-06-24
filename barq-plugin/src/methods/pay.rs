@@ -103,30 +103,29 @@ pub fn barq_pay(
                 "payment_hash": b11.payment_hash,
                 "payment_secret": b11.payment_secret
             });
-        
+
             let sendpay_response: PaymentResponse = state
                 .call("sendpay", sendpay_request)
                 .map_err(|err| error!("Error calling sendpay method: {err}"))?;
-        
+
             let waitsendpay_request: json::Value = serde_json::json!({
                 "payment_hash": sendpay_response.payment_hash.clone()
             });
-        
+
             let waitsendpay_response: PaymentResponse = state
                 .call("waitsendpay", waitsendpay_request)
                 .map_err(|err| error!("Error calling waitsendpay method: {err}"))?;
-        
+
             // Construct the response from the output
             BarqPayResponse {
                 response: Some(waitsendpay_response),
                 message: "barqpay executed successfully".to_string(),
             }
-        }, 
-        Err(err) => 
-            BarqPayResponse {
-                response: None,
-                message: format!("barqpay execution failed: {}", err),
-            }
+        }
+        Err(err) => BarqPayResponse {
+            response: None,
+            message: format!("barqpay execution failed: {}", err),
+        },
     };
 
     Ok(json::to_value(response)?)

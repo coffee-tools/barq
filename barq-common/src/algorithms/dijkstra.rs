@@ -1,5 +1,5 @@
 use crate::{
-    graph::{Edge, Node},
+    graph::{Edge, NetworkGraph, Node},
     strategy::{Route, RouteHop, RouteInput, RouteOutput, Strategy},
 };
 use std::collections::{HashMap, HashSet};
@@ -27,12 +27,15 @@ fn find_min_distance(
     let mut current_node_distance = &u64::MAX;
 
     for node in nodes {
-        let distance_value = distance.get(&node.id).expect(&format!("Cannot retrive distance of node with id {}", current_node_id));
-            if distance_value < current_node_distance && !visited.contains(&node.id) {
-                current_node_distance = distance_value;
-                current_node_id = node.id.clone();
-            }
+        let distance_value = distance.get(&node.id).expect(&format!(
+            "Cannot retrive distance of node with id {}",
+            current_node_id
+        ));
+        if distance_value < current_node_distance && !visited.contains(&node.id) {
+            current_node_distance = distance_value;
+            current_node_id = node.id.clone();
         }
+    }
 
     return current_node_id;
 }
@@ -64,26 +67,31 @@ impl Strategy for Dijkstra {
         }
 
         loop {
-            let current_node_id = find_min_distance(input.graph.get_all_nodes(), &distance, &visited);
+            let current_node_id =
+                find_min_distance(input.graph.get_all_nodes(), &distance, &visited);
             if visited.len() == input.graph.get_all_nodes().len() {
                 break;
             }
 
-            let node = input.graph.get_node(&(current_node_id.clone())).expect(
-                &format!("Node {} cannot be retrived from Network Graph", current_node_id.clone())
-            );
+            let node = input
+                .graph
+                .get_node(&(current_node_id.clone()))
+                .expect(&format!(
+                    "Node {} cannot be retrived from Network Graph",
+                    current_node_id.clone()
+                ));
             for channel in &node.channels {
-                let edge = input.graph.get_edge(channel).expect(
-                    &format!("Edge {} cannot be retrived from Network Graph", channel.clone())
-                );
+                let edge = input.graph.get_edge(channel).expect(&format!(
+                    "Edge {} cannot be retrived from Network Graph",
+                    channel.clone()
+                ));
 
                 let fee = calculate_fee(input.amount_msat, edge);
-                let current_node_distance =
-                    distance.get(&current_node_id).unwrap_or(&u64::MAX);
+                let current_node_distance = distance.get(&current_node_id).unwrap_or(&u64::MAX);
                 let destination = if edge.node1 == current_node_id {
-                    edge.node1.clone()
-                } else {
                     edge.node2.clone()
+                } else {
+                    edge.node1.clone()
                 };
                 let next_node_distance = *distance.get(&destination).unwrap_or(&u64::MAX);
 
@@ -133,9 +141,33 @@ mod tests {
 
     #[test]
     fn test_dijkstra_routing() {
+        let mut graph = NetworkGraph::new();
+        graph.add_node(Node::new("A"));
+        graph.add_node(Node::new("B"));
+        graph.add_node(Node::new("C"));
+        graph.add_node(Node::new("D"));
+
+        graph.add_edge(Edge::new("channel1", "A", "B", 200, 6, 1, 10));
+        graph.add_edge(Edge::new("channel2", "A", "C", 200, 6, 2, 10));
+        graph.add_edge(Edge::new("channel3", "B", "D", 200, 6, 1, 10));
+        graph.add_edge(Edge::new("channel4", "C", "D", 200, 6, 1, 10));
+
         let mut strategies: Vec<Box<dyn Strategy>> = Vec::new();
         strategies.push(Box::new(Dijkstra::new()));
         let router = Router::new(strategies);
-        // TODO: write tests for dijsktra
+        let input = RouteInput {
+            src_pubkey: "A".to_string(),
+            dest_pubkey: "D".to_string(),
+            cltv: 9,
+            amount_msat: 100,
+            graph,
+        };
+        let output = router.execute(&input).expect("Dijsktra Routing Failed");
+        let mut route_path: Vec<RouteHop> = Vec::<RouteHop>::new();
+        let hop1 = RouteHop::new("B".to_string(), "channel1".to_string(), 15, 101);
+        let hop2 = RouteHop::new("D".to_string(), "channel3".to_string(), 9, 100);
+        route_path.push(hop1);
+        route_path.push(hop2);
+        assert_eq!(output.path, route_path);
     }
 }

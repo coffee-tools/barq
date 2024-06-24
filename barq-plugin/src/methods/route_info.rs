@@ -13,7 +13,7 @@ use crate::plugin::State;
 pub struct BarqRouteInfoRequest {
     pub dest_pubkey: String,
     pub amount_msat: u64, // TODO: Add more fields as needed
-    pub cltv: u64
+    pub cltv: u64,
 }
 
 /// Response payload for Barq route info RPC method
@@ -50,18 +50,14 @@ pub fn barq_route_info(plugin: &mut Plugin<State>, request: Value) -> Result<Val
 
     let output = router.execute(&input);
     let response = match output {
-        Ok(output) => {
-            BarqRouteInfoResponse {
-                status: "success".to_string(),
-                route_info: Some(output.path),
-            }
+        Ok(output) => BarqRouteInfoResponse {
+            status: "success".to_string(),
+            route_info: Some(output.path),
         },
-        Err(err) => {
-            BarqRouteInfoResponse {
-                status: format!("barqpay execution failed: {}", err),
-                route_info: None
-            }
-        }
+        Err(err) => BarqRouteInfoResponse {
+            status: format!("barqpay execution failed: {}", err),
+            route_info: None,
+        },
     };
 
     Ok(json::to_value(response)?)

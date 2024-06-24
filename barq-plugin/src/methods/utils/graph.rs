@@ -44,8 +44,7 @@ pub fn build_network_graph(state: &State) -> Result<NetworkGraph, PluginError> {
         }
 
         // Convert amount_msat to u64
-        let amount_msat = channel
-            .amount_msat;
+        let amount_msat = channel.amount_msat;
 
         // Add edge to the graph
         let edge = Edge::new(
