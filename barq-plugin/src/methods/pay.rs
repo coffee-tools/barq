@@ -2,6 +2,8 @@ use serde::{Deserialize, Serialize};
 use serde_json as json;
 use serde_json::Value;
 
+use clightningrpc_common::{client::Client, types::Response};
+use clightningrpc_gossip_map::prelude::bolt7::ChannelAnnouncement;
 use clightningrpc_plugin::{error, errors::PluginError, plugin::Plugin};
 
 use barq_common::{graph::NetworkGraph, strategy::RouteInput};
@@ -34,6 +36,17 @@ pub fn barq_pay(plugin: &mut Plugin<State>, request: Value) -> Result<Value, Plu
     // TODO: Implement the logic to execute a payment using Barq strategies
     let state = &plugin.state;
     let router = state.router();
+
+    let socket = state
+        .cln_rpc_path()
+        .ok_or_else(|| {
+            error!("CLN RPC path not found in the plugin state");
+        })
+        .unwrap(); // TODO: Handle error
+
+    let client = Client::new(&socket);
+
+    // TODO: use CLN RPC to query information needed about gossip map
 
     // TODO: use CLN RPC to query any information needed
     let cln_response = state

@@ -66,8 +66,8 @@ impl Edge {
 /// Represents the network graph of nodes and edges.
 #[derive(Debug, Serialize, Deserialize, Clone)]
 pub struct NetworkGraph {
-    nodes: HashMap<String, Node>,
-    edges: HashMap<String, Edge>,
+    pub nodes: HashMap<String, Node>,
+    pub edges: HashMap<String, Edge>,
 }
 
 impl NetworkGraph {

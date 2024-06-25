@@ -38,6 +38,11 @@ impl State {
         self.router.clone().unwrap()
     }
 
+    /// Get CLN RPC path
+    pub(crate) fn cln_rpc_path(&self) -> Option<String> {
+        self.cln_rpc_path.clone()
+    }
+
     /// A convenience method to call a CLN RPC method
     pub fn call<T: Serialize, U: DeserializeOwned + std::fmt::Debug>(
         &self,

@@ -18,6 +18,7 @@ clightningrpc-plugin = { git = "https://github.com/laanwj/cln4rust.git", feature
     "log",
 ] }
 clightningrpc-plugin-macros = { git = "https://github.com/laanwj/cln4rust.git" }
+clightningrpc_gossip_map = { git = "https://github.com/vincenzopalazzo/rust-clightning-rpc", branch = "macros/gossip_map" }
 
 # Barq dependencies
 barq-common = { path = "../barq-common" }

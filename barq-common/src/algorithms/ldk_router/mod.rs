@@ -29,6 +29,8 @@ use crate::{
     strategy::{RouteInput, RouteOutput, Strategy},
 };
 
+pub mod logger;
+
 pub struct LdkRouter<L>
 where
     L: Deref,
@@ -47,32 +49,34 @@ where
     }
 
     fn convert_to_ldk_network_graph(&self, graph: &NetworkGraph) -> LdkNetworkGraph<L> {
-        let network = Network::Bitcoin;
-        let mut ldk_graph = LdkNetworkGraph::new(network, self.logger);
+        // let network = Network::Bitcoin;
+        // let mut ldk_graph = LdkNetworkGraph::new(network, self.logger);
 
         for (_, edge) in &graph.edges {
-            let channel = ChannelAnnouncement {
-                node_signature_1: [0; 64],
-                node_signature_2: [0; 64],
-                bitcoin_signature_1: [0; 64],
-                bitcoin_signature_2: [0; 64],
-                contents: UnsignedChannelAnnouncement {
-                    features: Default::default(),
-                    chain_hash: Default::default(),
-                    short_channel_id: Default::default(),
-                    node_id_1: Default::default(),
-                    node_id_2: Default::default(),
-                    bitcoin_key_1: Default::default(),
-                    bitcoin_key_2: Default::default(),
-                },
-            };
+            // let channel = ChannelAnnouncement {
+            //     node_signature_1: [0; 64],
+            //     node_signature_2: [0; 64],
+            //     bitcoin_signature_1: [0; 64],
+            //     bitcoin_signature_2: [0; 64],
+            //     contents: UnsignedChannelAnnouncement {
+            //         features: Default::default(),
+            //         chain_hash: Default::default(),
+            //         short_channel_id: Default::default(),
+            //         node_id_1: Default::default(),
+            //         node_id_2: Default::default(),
+            //         bitcoin_key_1: Default::default(),
+            //         bitcoin_key_2: Default::default(),
+            //     },
+            // };
 
-            ldk_graph
-                .update_channel_from_announcement(&channel, &None)
-                .unwrap(); // TODO: Handle error
+            // ldk_graph
+            //     .update_channel_from_announcement(&channel, &None)
+            //     .unwrap(); // TODO: Handle error
         }
 
-        ldk_graph
+        // ldk_graph
+
+        unimplemented!()
     }
 
     fn construct_route_params(input: &RouteInput) -> RouteParameters {
@@ -81,13 +85,13 @@ where
     }
 
     fn convert_route_to_output(route: Route) -> RouteOutput {
-        let total_fees = route.route_params.unwrap().final_value_msat; // TODO: Handle unwrap
-        let mut hops = Vec::new();
-        let route = route.paths[0]; // TODO: Why is this a vector?
-        for hop in route.hops {
-            let hop = hop.short_channel_id.to_string();
-            hops.push(hop);
-        }
+        // let total_fees = route.route_params.unwrap().final_value_msat; // TODO: Handle unwrap
+        // let mut hops = Vec::new();
+        // let route = route.paths[0]; // TODO: Why is this a vector?
+        // for hop in route.hops {
+        //     let hop = hop.short_channel_id.to_string();
+        //     hops.push(hop);
+        // }
 
         // TODO: Convert LDK Route to RouteOutput
         unimplemented!()
@@ -107,7 +111,7 @@ where
     fn route(&self, input: &RouteInput) -> RouteOutput {
         let our_pubkey = PublicKey::from_str(&input.source).unwrap();
         let route_params = Self::construct_route_params(input);
-        let ldk_graph = Self::convert_to_ldk_network_graph(&input.graph);
+        let ldk_graph = self.convert_to_ldk_network_graph(&input.graph);
         let scorer = ProbabilisticScorer::new(
             ProbabilisticScoringDecayParameters::default(),
             &ldk_graph,
