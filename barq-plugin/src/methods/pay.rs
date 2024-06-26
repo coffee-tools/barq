@@ -3,7 +3,7 @@ use serde_json as json;
 use serde_json::Value;
 
 use clightningrpc_common::{client::Client, types::Response};
-use clightningrpc_gossip_map::prelude::bolt7::ChannelAnnouncement;
+use clightningrpc_gossip_map::prelude::bolt7::ChannelUpdate;
 use clightningrpc_plugin::{error, errors::PluginError, plugin::Plugin};
 
 use barq_common::{graph::NetworkGraph, strategy::RouteInput};
@@ -16,6 +16,7 @@ pub struct BarqPayRequest {
     pub payment_hash: String,
     pub amount: u64,
     pub destination: String,
+    pub network: String,
     // TODO: Add more fields as needed
 }
 
@@ -37,14 +38,15 @@ pub fn barq_pay(plugin: &mut Plugin<State>, request: Value) -> Result<Value, Plu
     let state = &plugin.state;
     let router = state.router();
 
-    let socket = state
-        .cln_rpc_path()
-        .ok_or_else(|| {
-            error!("CLN RPC path not found in the plugin state");
-        })
-        .unwrap(); // TODO: Handle error
+    let network = request.network.clone();
 
-    let client = Client::new(&socket);
+    let home_dir = home::home_dir().expect("Failed to get home directory");
+    let gossip_map_path = home_dir
+        .join(".lightning")
+        .join(network)
+        .join("gossip_store");
+
+    let gossip_map = GossipMap::new(gossip_map_path);
 
     // TODO: use CLN RPC to query information needed about gossip map
 
