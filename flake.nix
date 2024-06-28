@@ -20,7 +20,7 @@
             sha256 = "sha256-PdbHtMIc35zqv8dDX5TXWyzhcu2h1G/LzIyS9S1TCAQ=";
             fetchSubmodules = true;
           };
-          buildInputs = with pkgs; [ gmp libsodium sqlite zlib jq ];
+          buildInputs = with pkgs; [ gmp libsodium sqlite zlib jq rPackages.GSED ];
           postPatch = ''
                     patchShebangs \
                       tools/generate-wire.py \
