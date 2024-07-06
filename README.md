@@ -17,6 +17,10 @@ The strategy design pattern is used to create a flexible routing mechanism. This
 
 Each strategy follows a common interface, making it easy to add new strategies without changing existing code for the plugin.
 
+## User Guide
+
+A user guide for this plugin can be found here: https://github.com/tareknaser/barq/blob/main/USER_GUIDE.md
+
 ## Integration Testing
 
 To run integration tests, we use `nix`. After [installing nix](https://nixos.org/download), run the following commands:
