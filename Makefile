@@ -11,6 +11,7 @@ fmt:
 	$(CC) fmt --all
 
 check:
+	$(CC) build
 	$(CC) test --all
 	cd tests; poetry run pytest . -s -x
 
