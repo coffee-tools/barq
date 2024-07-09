@@ -1,10 +1,8 @@
 use std::collections::HashMap;
 
 use anyhow::Result;
-use petgraph::{
-    dot::{Config, Dot},
-    graph::{DiGraph, NodeIndex},
-};
+use petgraph::dot::{Config, Dot};
+use petgraph::graph::{DiGraph, NodeIndex};
 use serde::{Deserialize, Serialize};
 
 /// Represents a node in the network graph.

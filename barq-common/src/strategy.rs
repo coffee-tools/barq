@@ -1,6 +1,7 @@
 use anyhow::Result;
 use serde::{Deserialize, Serialize};
 
+use crate::algorithms::get_algorithm;
 use crate::graph::NetworkGraph;
 
 /// The `Strategy` trait defines an interface for routing strategies used within
@@ -70,6 +71,20 @@ pub struct Router {
     /// A collection of routing strategies that can be used to route payments
     pub strategies: Vec<Box<dyn Strategy>>,
     // FIXME: Should we have a database here to store routing information?
+}
+
+impl Default for Router {
+    /// Create a new `Router` instance with the default strategies
+    ///
+    /// Default strategies:
+    /// - [`crate::algorithms::direct::Direct`]
+    fn default() -> Self {
+        // SAFETY: We can safely unwrap here because we know that the algorithm exists
+        let direct = get_algorithm("direct").expect("Failed to get direct algorithm");
+        let strategies = vec![direct];
+
+        Router { strategies }
+    }
 }
 
 impl Router {
