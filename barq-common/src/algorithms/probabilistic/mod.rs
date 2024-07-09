@@ -1,0 +1,114 @@
+use core::ops::Deref;
+use std::str::FromStr;
+use std::sync::Arc;
+
+use anyhow::Result;
+
+use lampo_common::bitcoin::secp256k1::PublicKey;
+use lampo_common::ldk::routing::gossip::NetworkGraph as LdkNetworkGraph;
+use lampo_common::ldk::routing::router::{find_route, Route, RouteParameters};
+use lampo_common::ldk::routing::scoring::FixedPenaltyScorer;
+use lampo_common::ldk::util::logger::Logger;
+use lampo_common::utils::logger::LampoLogger;
+
+use crate::graph::NetworkGraph;
+use crate::strategy::{RouteInput, RouteOutput, Strategy};
+
+/// A routing strategy that uses the LDK crates to find the best route.
+pub struct LDKRoutingStrategy<L>
+where
+    L: Deref,
+    L::Target: Logger,
+{
+    logger: L,
+}
+
+impl Default for LDKRoutingStrategy<Arc<LampoLogger>> {
+    fn default() -> Self {
+        Self::new(Arc::new(LampoLogger::new()))
+    }
+}
+
+impl<L> LDKRoutingStrategy<L>
+where
+    L: Deref,
+    L::Target: Logger,
+{
+    pub fn new(logger: L) -> Self {
+        Self { logger }
+    }
+
+    fn convert_to_ldk_network_graph(&self, graph: &NetworkGraph) -> LdkNetworkGraph<L> {
+        for edge in graph.get_all_edges() {
+            // TODO: Convert Edge to LDK ChannelAnnouncement
+            let _edge = edge;
+        }
+
+        unimplemented!("convert_to_ldk_network_graph not implemented yet.")
+    }
+
+    fn construct_route_params(input: &RouteInput) -> RouteParameters {
+        // TODO: Implement the logic to construct RouteParameters from the given input
+        let _input = input;
+        unimplemented!("construct_route_params not implemented yet.")
+    }
+
+    fn convert_route_to_output(route: Route) -> RouteOutput {
+        let _route = route;
+        // TODO: Implement the logic to convert the LDK Route to RouteOutput
+
+        unimplemented!("convert_route_to_output not implemented yet.")
+    }
+}
+
+impl<L> Strategy for LDKRoutingStrategy<L>
+where
+    L: Deref,
+    L::Target: Logger,
+{
+    fn can_apply(&self, _input: &RouteInput) -> Result<bool> {
+        // TODO: Implement the logic to check if the strategy can be applied to the
+        // given input
+        Ok(true)
+    }
+
+    fn route(&self, input: &RouteInput) -> Result<RouteOutput> {
+        let our_node_pubkey = PublicKey::from_str(&input.src_pubkey)
+            .map_err(|_| anyhow::anyhow!("Failed to parse source pubkey"))?;
+        let route_params = Self::construct_route_params(input);
+        let ldk_graph = self.convert_to_ldk_network_graph(&input.graph);
+        // TODO: What scorer should we use?
+        // See: https://github.com/lightningdevkit/rust-lightning/blob/main/lightning/src/routing/scoring.rs#L10-L13
+        let scorer = FixedPenaltyScorer::with_penalty(0);
+        // TODO: Implement the logic to generate random seed bytes
+        let random_seed_bytes = [0; 32];
+
+        let route = find_route(
+            &our_node_pubkey,
+            &route_params,
+            &ldk_graph,
+            None,
+            self.logger.deref(),
+            &scorer,
+            &(),
+            &random_seed_bytes,
+        )
+        .map_err(|e| anyhow::anyhow!("Failed to find route: {:?}", e))?;
+
+        Ok(Self::convert_route_to_output(route))
+    }
+}
+
+#[cfg(test)]
+mod tests {
+
+    #[test]
+    fn test_route() {
+        /*
+        Use:
+        - https://github.com/lightningdevkit/rust-lightning/blob/main/lightning/src/routing/test_utils.rs#L185
+        - https://github.com/lightningdevkit/rust-lightning/blob/main/lightning/src/routing/router.rs#L3428
+        to write test cases for the `route` method of `LDKRoutingStrategy`
+         */
+    }
+}
