@@ -1,17 +1,14 @@
 //! Barq Plugin implementation
-use std::sync::Arc;
 
-use serde::{de::DeserializeOwned, Serialize};
+use serde::de::DeserializeOwned;
+use serde::Serialize;
 use serde_json::Value;
 
 use clightningrpc::LightningRPC;
-use clightningrpc_plugin::{commands::RPCCommand, errors::PluginError, plugin::Plugin};
+use clightningrpc_plugin::commands::RPCCommand;
+use clightningrpc_plugin::errors::PluginError;
+use clightningrpc_plugin::plugin::Plugin;
 use clightningrpc_plugin_macros::{plugin, rpc_method};
-
-use barq_common::{
-    algorithms::direct::Direct,
-    strategy::{Router, Strategy},
-};
 
 use crate::methods;
 
@@ -21,23 +18,21 @@ use crate::methods;
 /// to enable us to call CLN RPC methods
 #[derive(Clone)]
 pub(crate) struct State {
-    // FIXME: Do we need the router here?
-    router: Option<Arc<Router>>,
+    /// CLN RPC path
+    ///
+    /// eg. /home/user/.lightning/lightning-rpc
     cln_rpc_path: Option<String>,
 }
 
 impl State {
     /// Create a new Barq Plugin State
     pub fn new() -> Self {
-        State {
-            router: None,
-            cln_rpc_path: None,
-        }
+        State { cln_rpc_path: None }
     }
 
-    /// Get Barq router
-    pub(crate) fn router(&self) -> Arc<Router> {
-        self.router.clone().expect("Failed to get router")
+    /// Get CLN RPC path
+    pub(crate) fn cln_rpc_path(&self) -> Option<String> {
+        self.cln_rpc_path.clone()
     }
 
     /// A convenience method to call a CLN RPC method
@@ -78,11 +73,6 @@ fn on_init(plugin: &mut Plugin<State>) -> Value {
     let config = plugin.configuration.clone().unwrap();
     let rpc_file = format!("{}/{}", config.lightning_dir, config.rpc_file);
 
-    let strategies: Vec<Box<dyn Strategy>> = vec![Box::new(Direct)];
-
-    #[allow(clippy::arc_with_non_send_sync)]
-    let shared_router = Arc::new(Router::new(strategies));
-    plugin.state.router = Some(shared_router);
     plugin.state.cln_rpc_path = Some(rpc_file);
 
     serde_json::json!({})
