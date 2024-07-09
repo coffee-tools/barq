@@ -1,6 +1,8 @@
 use serde::Deserialize;
 
-use clightningrpc_plugin::{error, errors::PluginError};
+use clightningrpc_gossip_map::GossipMap;
+use clightningrpc_plugin::error;
+use clightningrpc_plugin::errors::PluginError;
 
 use barq_common::graph::{Edge, NetworkGraph, Node};
 
@@ -27,7 +29,10 @@ struct ChannelInfo {
 }
 
 /// Function to build the network graph using the plugin state.
-pub fn build_network_graph(state: &State) -> Result<NetworkGraph, PluginError> {
+pub fn build_network_graph(
+    state: &State,
+    gossip_map: &GossipMap,
+) -> Result<NetworkGraph, PluginError> {
     // Call the `listchannels` method to get the network information
     let response: CLNListChannelsResponse = state
         .call("listchannels", serde_json::json!({}))
@@ -47,6 +52,9 @@ pub fn build_network_graph(state: &State) -> Result<NetworkGraph, PluginError> {
 
         // Convert amount_msat to u64
         let amount_msat = channel.amount_msat;
+
+        // TODO: get more information from the gossip map
+        let _channel = gossip_map.get_channel(&channel.short_channel_id);
 
         // Add edge to the graph
         let edge = Edge::new(
@@ -76,9 +84,11 @@ mod tests {
 
         let plugin: Plugin<State> = Plugin::new(State::new(), false);
 
+        let gossip_map = GossipMap::new(0);
+
         // Call the function (this won't actually work without a proper plugin state
         // setup)
-        match build_network_graph(&plugin.state) {
+        match build_network_graph(&plugin.state, &gossip_map) {
             Ok(graph) => {
                 // Check the graph contents
                 assert!(graph.get_all_nodes().is_empty());

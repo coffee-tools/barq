@@ -1,11 +1,15 @@
 use serde::{Deserialize, Serialize};
 use serde_json as json;
 
-use clightningrpc_plugin::{error, errors::PluginError, plugin::Plugin};
+use clightningrpc_gossip_map::GossipMap;
+use clightningrpc_plugin::error;
+use clightningrpc_plugin::errors::PluginError;
+use clightningrpc_plugin::plugin::Plugin;
 
-use barq_common::strategy::RouteInput;
+use barq_common::strategy::{RouteInput, Router};
 
-use crate::{methods::utils::graph::build_network_graph, plugin::State};
+use crate::methods::utils::graph::build_network_graph;
+use crate::plugin::State;
 
 /// Response from `sendpay` RPC command of Core Lightning
 ///
@@ -47,20 +51,28 @@ pub struct BarqPayResponse {
     pub response: Option<CLNSendpayResponse>,
 }
 
-/// Bolt11 invoice information
+/// Response from `decodepay` RPC command of Core Lightning
+///
+/// See: https://docs.corelightning.org/reference/lightning-decodepay#return-value
 #[derive(Deserialize, Debug)]
 struct Bolt11 {
+    /// The BIP173 name for the currency
+    currency: String,
     payee: String,
     amount_msat: u64,
     payment_hash: String,
     min_final_cltv_expiry: u64,
-    payment_secret: String,
+    payment_secret: String, // FIXME: Should this be optional?
 }
 
-/// Node information
+/// Response from `getinfo` RPC command of Core Lightning
+///
+/// See: https://docs.corelightning.org/reference/lightning-getinfo#return-value
 #[derive(Debug, Deserialize)]
 pub struct NodeInfo {
     pub id: String,
+    /// Represents the type of network on the node are working
+    pub network: String,
 }
 
 /// Barq RPC method to execute a payment
@@ -72,7 +84,7 @@ pub fn barq_pay(
     let request: BarqPayRequest = json::from_value(request).map_err(|err| error!("{err}"))?;
 
     let state = &plugin.state;
-    let router = state.router();
+    let router = Router::default();
 
     let b11: Bolt11 = state
         .call(
@@ -83,12 +95,56 @@ pub fn barq_pay(
         )
         .map_err(|err| error!("Error calling CLN RPC method: {err}"))?;
 
+    // Get the network of the invoice
+    // See: https://github.com/lightning/bolts/blob/master/11-payment-encoding.md#human-readable-part
+    let invoice_network = match b11.currency.as_str() {
+        "bc" => "bitcoin",
+        "tb" => "testnet",
+        "tbs" => "signet",
+        "bcrt" => "regtest",
+        _ => "unknown",
+    };
+
     let node_info: NodeInfo = state
         .call("getinfo", serde_json::json!({}))
         .map_err(|err| error!("Error calling CLN RPC method: {err}"))?;
 
+    let node_network = node_info.network.as_str();
+
+    if invoice_network != node_network {
+        return Err(error!(
+            "Invoice network ({}) does not match node network ({})",
+            invoice_network, node_network
+        ));
+    }
+
+    // Get the gossip map path from the plugin state
+
+    // This is for example: /home/user/.lightning/lightning-rpc
+    let lightning_rpc_path = state
+        .cln_rpc_path()
+        .ok_or_else(|| error!("CLN RPC path not found in the plugin state"))?;
+    let lightning_rpc_path = std::path::Path::new(&lightning_rpc_path);
+    // Lightning path is /home/user/.lightning
+    let lightning_path = lightning_rpc_path.parent().ok_or_else(|| {
+        error!(
+            "Failed to get parent directory of CLN RPC path: {:?}",
+            lightning_rpc_path
+        )
+    })?;
+    // Gossip map path is /home/user/.lightning/<network>/gossip_store
+    let gossip_map_path = lightning_path.join(node_network).join("gossip_store");
+    let gossip_map_path = gossip_map_path.to_str().ok_or_else(|| {
+        error!(
+            "Failed to convert gossip map path to string: {:?}",
+            gossip_map_path
+        )
+    })?;
+    let gossip_map = GossipMap::from_file(gossip_map_path)
+        .map_err(|err| error!("Error reading gossip map from file: {err}"))?;
+
     // Build the network graph from the plugin state
-    let network_graph = build_network_graph(state)?;
+    let network_graph = build_network_graph(state, &gossip_map)?;
 
     let input = RouteInput {
         src_pubkey: node_info.id.clone(),

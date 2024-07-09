@@ -2,14 +2,16 @@ use serde::{Deserialize, Serialize};
 use serde_json as json;
 use serde_json::Value;
 
-use clightningrpc_plugin::{error, errors::PluginError, plugin::Plugin};
+use clightningrpc_gossip_map::GossipMap;
+use clightningrpc_plugin::error;
+use clightningrpc_plugin::errors::PluginError;
+use clightningrpc_plugin::plugin::Plugin;
 
-use barq_common::strategy::{RouteHop, RouteInput};
+use barq_common::strategy::{RouteHop, RouteInput, Router};
 
-use crate::{
-    methods::{pay::NodeInfo, utils::graph::build_network_graph},
-    plugin::State,
-};
+use crate::methods::pay::NodeInfo;
+use crate::methods::utils::graph::build_network_graph;
+use crate::plugin::State;
 
 /// Request payload for Barq route info RPC method
 #[derive(Deserialize, Serialize)]
@@ -33,15 +35,41 @@ pub struct BarqRouteInfoResponse {
 pub fn barq_route_info(plugin: &mut Plugin<State>, request: Value) -> Result<Value, PluginError> {
     log::info!("barqrouteinfo called with request: {}", request);
     let request: BarqRouteInfoRequest = json::from_value(request).map_err(|err| error!("{err}"))?;
+
     let state = &plugin.state;
-    let router = state.router();
+    let router = Router::default();
 
     let node_info: NodeInfo = state
         .call("getinfo", serde_json::json!({}))
         .map_err(|err| error!("Error calling CLN RPC method: {err}"))?;
 
+    // Get the gossip map path from the plugin state
+
+    // This is for example: /home/user/.lightning/lightning-rpc
+    let lightning_rpc_path = state
+        .cln_rpc_path()
+        .ok_or_else(|| error!("CLN RPC path not found in the plugin state"))?;
+    let lightning_rpc_path = std::path::Path::new(&lightning_rpc_path);
+    // Lightning path is /home/user/.lightning
+    let lightning_path = lightning_rpc_path.parent().ok_or_else(|| {
+        error!(
+            "Failed to get parent directory of CLN RPC path: {:?}",
+            lightning_rpc_path
+        )
+    })?;
+    // Gossip map path is /home/user/.lightning/<network>/gossip_store
+    let gossip_map_path = lightning_path.join(node_info.network).join("gossip_store");
+    let gossip_map_path = gossip_map_path.to_str().ok_or_else(|| {
+        error!(
+            "Failed to convert gossip map path to string: {:?}",
+            gossip_map_path
+        )
+    })?;
+    let gossip_map = GossipMap::from_file(gossip_map_path)
+        .map_err(|err| error!("Error reading gossip map from file: {err}"))?;
+
     // Build the network graph from the plugin state
-    let network_graph = build_network_graph(state)?;
+    let network_graph = build_network_graph(state, &gossip_map)?;
 
     let input = RouteInput {
         src_pubkey: node_info.id.clone(),
