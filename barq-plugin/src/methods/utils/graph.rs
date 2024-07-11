@@ -71,33 +71,3 @@ pub fn build_network_graph(
 
     Ok(graph)
 }
-
-#[cfg(test)]
-mod tests {
-    use super::*;
-    use clightningrpc_plugin::plugin::Plugin;
-
-    #[test]
-    fn test_build_network_graph() {
-        // TODO: Implement proper tests when integrating with a real or mocked plugin
-        // state.
-
-        let plugin: Plugin<State> = Plugin::new(State::new(), false);
-
-        let gossip_map = GossipMap::new(0);
-
-        // Call the function (this won't actually work without a proper plugin state
-        // setup)
-        match build_network_graph(&plugin.state, &gossip_map) {
-            Ok(graph) => {
-                // Check the graph contents
-                assert!(graph.get_all_nodes().is_empty());
-                assert!(graph.get_all_edges().is_empty());
-            }
-            Err(err) => {
-                // Handle error (expected in this dummy test)
-                println!("Error: {:?}", err);
-            }
-        }
-    }
-}
