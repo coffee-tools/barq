@@ -119,6 +119,10 @@ pub fn barq_pay(
     }
 
     // Get the gossip map path from the plugin state
+    // FIXME: Currently, we are loading the gossip map from the file system
+    //        each time the `barqpay` method is called. This is not efficient.
+    //        We should load the gossip map once and cache it in the plugin state.
+    //        See: https://github.com/tareknaser/barq/issues/21 for more details.
 
     // This is for example: /home/user/.lightning/lightning-rpc
     let lightning_rpc_path = state
