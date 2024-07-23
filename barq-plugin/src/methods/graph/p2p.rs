@@ -6,7 +6,7 @@ use serde::Deserialize;
 use serde::Serialize;
 
 use clightningrpc_gossip_map::GossipMap;
-use clightningrpc_plugin::errors::PluginError;
+use clightningrpc_plugin::{error, errors::PluginError};
 
 use barq_common::graph::{Channel, NetworkGraph, Node};
 
@@ -75,13 +75,37 @@ impl NetworkGraph for P2PNetworkGraph {
 }
 
 /// Function to build the network graph using the plugin state.
-pub fn build_p2p_network_graph(
-    _state: &State,
-    _gossip_map: &GossipMap,
-) -> Result<P2PNetworkGraph, PluginError> {
+pub fn build_p2p_network_graph(state: &State) -> Result<P2PNetworkGraph, PluginError> {
     let graph = P2PNetworkGraph::new();
+    // Get the gossip map path from the plugin state
+    // FIXME: Currently, we are loading the gossip map from the file system
+    //        each time the `barqpay` method is called. This is not efficient.
+    //        We should load the gossip map once and cache it in the plugin state.
+    //        See: https://github.com/tareknaser/barq/issues/21 for more details.
+
+    // SAFETY: It is safe to unwrap here because the plugin init the path always.
+    let lightning_rpc_path = state.cln_rpc_path.as_ref().unwrap();
+    let lightning_rpc_path = std::path::Path::new(&lightning_rpc_path);
+    // Lightning path is /home/user/.lightning
+    let lightning_path = lightning_rpc_path.parent().ok_or_else(|| {
+        error!(
+            "Failed to get parent directory of CLN RPC path: {:?}",
+            lightning_rpc_path
+        )
+    })?;
+    // SAFETY: It is safe to unwrap here because the plugin init the network always.
+    let gossip_map_path = lightning_path
+        .join(state.network.as_ref().unwrap())
+        .join("gossip_store");
+    let gossip_map_path = gossip_map_path.to_str().ok_or_else(|| {
+        error!(
+            "Failed to convert gossip map path to string: {:?}",
+            gossip_map_path
+        )
+    })?;
+    let gossip_map = GossipMap::from_file(gossip_map_path)
+        .map_err(|err| error!("Error reading gossip map from file: {err}"))?;
 
     // TODO: Use the gossip map to build the network graph
-
     Ok(graph)
 }

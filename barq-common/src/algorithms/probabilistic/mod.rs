@@ -72,12 +72,12 @@ where
     /// required for LDK routing.
     fn can_apply(&self, input: &RouteInput) -> Result<bool> {
         if input.graph.has_p2p_info() {
-            Ok(true)
-        } else {
-            Err(anyhow::anyhow!(
-                "The network graph does not have peer-to-peer information required for LDK routing"
-            ))
+            return Ok(true);
         }
+        log::warn!(
+            "The network graph does not have peer-to-peer information required for LDK routing"
+        );
+        Ok(false)
     }
 
     fn route(&self, input: &RouteInput) -> Result<RouteOutput> {

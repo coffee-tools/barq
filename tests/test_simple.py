@@ -31,7 +31,7 @@ def test_pay_amounts(node_factory):
     l1.rpc.call("barqpay", {"bolt11_invoice": inv})
 
     invoice = only_one(l2.rpc.listinvoices('test_pay_amounts')['invoices'])
-    assert invoice['amount_received_msat'] >= Millisatoshi(123000)
+    assert invoice['amount_msat'] >= Millisatoshi(123000)
 
 
 def test_pay_without_amounts(node_factory):
@@ -46,4 +46,4 @@ def test_pay_without_amounts(node_factory):
     l1.rpc.call("barqpay", {"bolt11_invoice": inv})
 
     invoice = only_one(l2.rpc.listinvoices('test_pay_amounts')['invoices'])
-    assert invoice['amount_received_msat'] >= Millisatoshi(123000)
+    assert invoice['amount_msat'] >= Millisatoshi(123000)

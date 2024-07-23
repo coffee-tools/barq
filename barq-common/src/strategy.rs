@@ -1,9 +1,35 @@
+use std::str::FromStr;
+
 use anyhow::Result;
 use serde::{Deserialize, Serialize};
 
-use crate::algorithms::direct::Direct;
+// FIXME: this should be a builder pattern.
 use crate::algorithms::get_algorithm;
 use crate::graph::NetworkGraph;
+
+#[derive(Debug)]
+pub enum StrategyKind {
+    Direct,
+    Probabilistic,
+}
+
+impl FromStr for StrategyKind {
+    type Err = anyhow::Error;
+
+    fn from_str(s: &str) -> anyhow::Result<Self> {
+        match s.to_lowercase().as_str() {
+            "direct" => Ok(Self::Direct),
+            "probabilistic" => Ok(Self::Probabilistic),
+            _ => anyhow::bail!("Strategy `{s}` not found"),
+        }
+    }
+}
+
+impl Default for StrategyKind {
+    fn default() -> Self {
+        Self::Direct
+    }
+}
 
 /// The `Strategy` trait defines an interface for routing strategies used within
 /// Barq.
@@ -50,10 +76,7 @@ pub struct RouteInput {
     /// The network graph used for routing
     pub graph: Box<dyn NetworkGraph>,
     /// Strategy to use for routing
-    ///
-    /// Note: This field is optional. If not provided, the router will select
-    /// the best strategy based on the input and context.
-    pub strategy: Option<String>,
+    pub strategy: StrategyKind,
 }
 
 /// Represents the output of a routing strategy
@@ -86,8 +109,9 @@ impl Default for Router {
     /// - [`crate::algorithms::direct::Direct`]
     fn default() -> Self {
         // SAFETY: We can safely unwrap here because we know that the algorithm exists
-        let direct = get_algorithm("direct").expect("Failed to get direct algorithm");
-        let strategies = vec![direct];
+        let direct = get_algorithm(&StrategyKind::Direct).unwrap();
+        let probabilistic = get_algorithm(&StrategyKind::Probabilistic).unwrap();
+        let strategies = vec![direct, probabilistic];
 
         Router { strategies }
     }
@@ -102,32 +126,19 @@ impl Router {
     }
 
     /// Execute the routing process using the best strategy based on input
-    ///
-    /// If the user specifies a strategy in the input, the router will use that
-    /// strategy. Otherwise, it will select the best strategy based on the input
-    /// and context.
     pub fn execute(&self, input: &RouteInput) -> Result<RouteOutput> {
-        // Either the user specifies a strategy or we select the best one
-        let best_strategy = match input.strategy.clone() {
-            Some(strategy) => {
-                let strategy = get_algorithm(&strategy)
-                    .ok_or_else(|| anyhow::anyhow!("Failed to get strategy: {}", strategy))?;
-                strategy
-            }
-            None => self
-                .select_best_strategy(input)?
-                .ok_or_else(|| anyhow::anyhow!("No strategy found for the given input"))?,
-        };
-
+        let best_strategy = get_algorithm(&input.strategy)
+            .ok_or_else(|| anyhow::anyhow!("No strategy found for the given input"))?;
         best_strategy.route(input)
     }
 
     /// Select the best strategy based on input
-    fn select_best_strategy(&self, _input: &RouteInput) -> Result<Option<Box<dyn Strategy>>> {
+    // FIXME: we di not overdesign, would be cool to have this functionality tho
+    fn select_best_strategy(&self, _input: &RouteInput) -> anyhow::Result<Option<StrategyKind>> {
         // TODO: Implement logic to select the best strategy based on input
         //       and whether the strategy can be applied to the input
 
         // For now, we will just use the direct strategy
-        Ok(Some(Box::new(Direct::new())))
+        Ok(Some(StrategyKind::Direct))
     }
 }

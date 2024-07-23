@@ -21,18 +21,17 @@ pub(crate) struct State {
     /// CLN RPC path
     ///
     /// eg. /home/user/.lightning/lightning-rpc
-    cln_rpc_path: Option<String>,
+    pub(crate) cln_rpc_path: Option<String>,
+    pub(crate) network: Option<String>,
 }
 
 impl State {
     /// Create a new Barq Plugin State
     pub fn new() -> Self {
-        State { cln_rpc_path: None }
-    }
-
-    /// Get CLN RPC path
-    pub(crate) fn cln_rpc_path(&self) -> Option<String> {
-        self.cln_rpc_path.clone()
+        State {
+            cln_rpc_path: None,
+            network: None,
+        }
     }
 
     /// A convenience method to call a CLN RPC method
@@ -72,7 +71,7 @@ pub fn build_plugin() -> anyhow::Result<Plugin<State>> {
 fn on_init(plugin: &mut Plugin<State>) -> Value {
     let config = plugin.configuration.clone().unwrap();
     let rpc_file = format!("{}/{}", config.lightning_dir, config.rpc_file);
-
+    plugin.state.network = Some(config.network);
     plugin.state.cln_rpc_path = Some(rpc_file);
 
     serde_json::json!({})
