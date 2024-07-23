@@ -1,6 +1,7 @@
 use anyhow::Result;
 use serde::{Deserialize, Serialize};
 
+use crate::algorithms::direct::Direct;
 use crate::algorithms::get_algorithm;
 use crate::graph::NetworkGraph;
 
@@ -48,6 +49,12 @@ pub struct RouteInput {
     pub amount_msat: u64,
     pub cltv: u64,
     pub graph: NetworkGraph,
+    /// Strategy to use for routing
+    ///
+    /// Note: This field is optional. If not provided, the router will select
+    /// the best strategy based on the input and context.
+    #[serde(skip_serializing_if = "Option::is_none")]
+    pub strategy: Option<String>,
 }
 
 /// Represents the output of a routing strategy
@@ -96,29 +103,32 @@ impl Router {
     }
 
     /// Execute the routing process using the best strategy based on input
+    ///
+    /// If the user specifies a strategy in the input, the router will use that
+    /// strategy. Otherwise, it will select the best strategy based on the input
+    /// and context.
     pub fn execute(&self, input: &RouteInput) -> Result<RouteOutput> {
-        // Attempt to find the best strategy for the given input
-        let best_strategy = self
-            .select_best_strategy(input)?
-            .ok_or_else(|| anyhow::anyhow!("No strategy found for the given input"))?;
+        // Either the user specifies a strategy or we select the best one
+        let best_strategy = match input.strategy.clone() {
+            Some(strategy) => {
+                let strategy = get_algorithm(&strategy)
+                    .ok_or_else(|| anyhow::anyhow!("Failed to get strategy: {}", strategy))?;
+                strategy
+            }
+            None => self
+                .select_best_strategy(input)?
+                .ok_or_else(|| anyhow::anyhow!("No strategy found for the given input"))?,
+        };
 
         best_strategy.route(input)
     }
 
     /// Select the best strategy based on input
-    fn select_best_strategy(&self, input: &RouteInput) -> Result<Option<&dyn Strategy>> {
+    fn select_best_strategy(&self, _input: &RouteInput) -> Result<Option<Box<dyn Strategy>>> {
         // TODO: Implement logic to select the best strategy based on input
         //       and whether the strategy can be applied to the input
 
-        // For now, we will just use the first strategy as a placeholder
-
-        for strategy in &self.strategies {
-            if strategy.can_apply(input)? {
-                return Ok(Some(strategy.as_ref()));
-            }
-        }
-
-        // If no strategy can be applied, return None
-        Ok(None)
+        // For now, we will just use the direct strategy
+        Ok(Some(Box::new(Direct::new())))
     }
 }

@@ -39,6 +39,9 @@ enum Status {
 #[derive(Deserialize, Serialize)]
 pub struct BarqPayRequest {
     pub bolt11_invoice: String,
+    /// The strategy to use for routing the payment
+    #[serde(skip_serializing_if = "Option::is_none")]
+    pub strategy: Option<String>,
 }
 
 /// Response payload for Barq pay RPC method
@@ -156,6 +159,7 @@ pub fn barq_pay(
         amount_msat: b11.amount_msat,
         cltv: b11.min_final_cltv_expiry,
         graph: network_graph,
+        strategy: request.strategy,
     };
 
     // Execute the routing process

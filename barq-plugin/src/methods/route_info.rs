@@ -19,6 +19,9 @@ pub struct BarqRouteInfoRequest {
     pub dest_pubkey: String,
     pub amount_msat: u64,
     pub cltv: u64,
+    /// The strategy to use for routing the payment
+    #[serde(skip_serializing_if = "Option::is_none")]
+    pub strategy: Option<String>,
 }
 
 /// Response payload for Barq route info RPC method
@@ -77,6 +80,7 @@ pub fn barq_route_info(plugin: &mut Plugin<State>, request: Value) -> Result<Val
         amount_msat: request.amount_msat,
         cltv: request.cltv,
         graph: network_graph,
+        strategy: request.strategy,
     };
 
     let output = router.execute(&input);

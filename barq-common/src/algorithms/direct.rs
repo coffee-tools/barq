@@ -95,6 +95,7 @@ mod tests {
             cltv: 9,
             amount_msat: 100,
             graph,
+            strategy: Some("direct".to_string()),
         };
         let output = router.execute(&input).expect("Direct Routing Failed");
         let mut route_path: Vec<RouteHop> = Vec::<RouteHop>::new();
