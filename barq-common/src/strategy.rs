@@ -42,18 +42,17 @@ impl RouteHop {
 }
 
 /// Represents input data required for routing a payment
-#[derive(Serialize, Deserialize)]
 pub struct RouteInput {
     pub src_pubkey: String,
     pub dest_pubkey: String,
     pub amount_msat: u64,
     pub cltv: u64,
-    pub graph: NetworkGraph,
+    /// The network graph used for routing
+    pub graph: Box<dyn NetworkGraph>,
     /// Strategy to use for routing
     ///
     /// Note: This field is optional. If not provided, the router will select
     /// the best strategy based on the input and context.
-    #[serde(skip_serializing_if = "Option::is_none")]
     pub strategy: Option<String>,
 }
 

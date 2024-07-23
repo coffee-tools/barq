@@ -74,34 +74,3 @@ impl Strategy for Direct {
         Ok(RouteOutput { path })
     }
 }
-
-#[cfg(test)]
-mod tests {
-    use super::*;
-    use crate::graph::{Edge, NetworkGraph, Node};
-    use crate::strategy::Router;
-
-    #[test]
-    fn test_direct_routing() {
-        let mut graph = NetworkGraph::new();
-        graph.add_node(Node::new("A"));
-        graph.add_node(Node::new("B"));
-        graph.add_edge(Edge::new("channel", "A", "B", 100, 6, 1, 10));
-        let strategies: Vec<Box<dyn Strategy>> = vec![Box::new(Direct::new())];
-        let router = Router::new(strategies);
-        let input = RouteInput {
-            src_pubkey: "A".to_string(),
-            dest_pubkey: "B".to_string(),
-            cltv: 9,
-            amount_msat: 100,
-            graph,
-            strategy: Some("direct".to_string()),
-        };
-        let output = router.execute(&input).expect("Direct Routing Failed");
-        let mut route_path: Vec<RouteHop> = Vec::<RouteHop>::new();
-        let edge = Edge::new("channel", "A", "B", 100, 6, 1, 10);
-        let hop = RouteHop::new("B".to_string(), edge.id, 9, 100);
-        route_path.push(hop);
-        assert_eq!(output.path, route_path);
-    }
-}

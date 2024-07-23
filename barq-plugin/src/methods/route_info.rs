@@ -7,10 +7,12 @@ use clightningrpc_plugin::error;
 use clightningrpc_plugin::errors::PluginError;
 use clightningrpc_plugin::plugin::Plugin;
 
+use barq_common::graph::NetworkGraph;
 use barq_common::strategy::{RouteHop, RouteInput, Router};
 
+use crate::methods::graph::cln::build_cln_network_graph;
+use crate::methods::graph::p2p::build_p2p_network_graph;
 use crate::methods::pay::NodeInfo;
-use crate::methods::utils::graph::build_network_graph;
 use crate::plugin::State;
 
 /// Request payload for Barq route info RPC method
@@ -46,33 +48,44 @@ pub fn barq_route_info(plugin: &mut Plugin<State>, request: Value) -> Result<Val
         .call("getinfo", serde_json::json!({}))
         .map_err(|err| error!("Error calling CLN RPC method: {err}"))?;
 
-    // Get the gossip map path from the plugin state
+    // If the probabilistic strategy is selected, build the network graph from the gossip map
+    // else, build the network graph from the plugin state
+    let network_graph: Box<dyn NetworkGraph> =
+        if request.strategy == Some("probabilistic".to_string()) {
+            // Get the gossip map path from the plugin state
+            // FIXME: Currently, we are loading the gossip map from the file system
+            //        each time the `barqpay` method is called. This is not efficient.
+            //        We should load the gossip map once and cache it in the plugin state.
+            //        See: https://github.com/tareknaser/barq/issues/21 for more details.
 
-    // This is for example: /home/user/.lightning/lightning-rpc
-    let lightning_rpc_path = state
-        .cln_rpc_path()
-        .ok_or_else(|| error!("CLN RPC path not found in the plugin state"))?;
-    let lightning_rpc_path = std::path::Path::new(&lightning_rpc_path);
-    // Lightning path is /home/user/.lightning
-    let lightning_path = lightning_rpc_path.parent().ok_or_else(|| {
-        error!(
-            "Failed to get parent directory of CLN RPC path: {:?}",
-            lightning_rpc_path
-        )
-    })?;
-    // Gossip map path is /home/user/.lightning/<network>/gossip_store
-    let gossip_map_path = lightning_path.join(node_info.network).join("gossip_store");
-    let gossip_map_path = gossip_map_path.to_str().ok_or_else(|| {
-        error!(
-            "Failed to convert gossip map path to string: {:?}",
-            gossip_map_path
-        )
-    })?;
-    let gossip_map = GossipMap::from_file(gossip_map_path)
-        .map_err(|err| error!("Error reading gossip map from file: {err}"))?;
+            // This is for example: /home/user/.lightning/lightning-rpc
+            let lightning_rpc_path = state
+                .cln_rpc_path()
+                .ok_or_else(|| error!("CLN RPC path not found in the plugin state"))?;
+            let lightning_rpc_path = std::path::Path::new(&lightning_rpc_path);
+            // Lightning path is /home/user/.lightning
+            let lightning_path = lightning_rpc_path.parent().ok_or_else(|| {
+                error!(
+                    "Failed to get parent directory of CLN RPC path: {:?}",
+                    lightning_rpc_path
+                )
+            })?;
+            // Gossip map path is /home/user/.lightning/<network>/gossip_store
+            let gossip_map_path = lightning_path.join(node_info.network).join("gossip_store");
+            let gossip_map_path = gossip_map_path.to_str().ok_or_else(|| {
+                error!(
+                    "Failed to convert gossip map path to string: {:?}",
+                    gossip_map_path
+                )
+            })?;
+            let gossip_map = GossipMap::from_file(gossip_map_path)
+                .map_err(|err| error!("Error reading gossip map from file: {err}"))?;
 
-    // Build the network graph from the plugin state
-    let network_graph = build_network_graph(state, &gossip_map)?;
+            Box::new(build_p2p_network_graph(state, &gossip_map)?)
+        } else {
+            // Build the network graph from the plugin state
+            Box::new(build_cln_network_graph(state)?)
+        };
 
     let input = RouteInput {
         src_pubkey: node_info.id.clone(),

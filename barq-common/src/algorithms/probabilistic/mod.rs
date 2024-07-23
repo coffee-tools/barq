@@ -38,10 +38,10 @@ where
         Self { logger }
     }
 
-    fn convert_to_ldk_network_graph(&self, graph: &NetworkGraph) -> LdkNetworkGraph<L> {
-        for edge in graph.get_all_edges() {
-            // TODO: Convert Edge to LDK ChannelAnnouncement
-            let _edge = edge;
+    fn convert_to_ldk_network_graph(&self, graph: &dyn NetworkGraph) -> LdkNetworkGraph<L> {
+        for channel in graph.get_channels() {
+            // TODO: Convert Channel to LDK ChannelAnnouncement
+            let _channel = channel;
         }
 
         unimplemented!("convert_to_ldk_network_graph not implemented yet.")
@@ -66,17 +66,25 @@ where
     L: Deref,
     L::Target: Logger,
 {
-    fn can_apply(&self, _input: &RouteInput) -> Result<bool> {
-        // TODO: Implement the logic to check if the strategy can be applied to the
-        // given input
-        Ok(true)
+    /// Determines if the LDK routing strategy can be applied to the given input.
+    ///
+    /// This method checks if the network graph has the peer-to-peer information
+    /// required for LDK routing.
+    fn can_apply(&self, input: &RouteInput) -> Result<bool> {
+        if input.graph.has_p2p_info() {
+            Ok(true)
+        } else {
+            Err(anyhow::anyhow!(
+                "The network graph does not have peer-to-peer information required for LDK routing"
+            ))
+        }
     }
 
     fn route(&self, input: &RouteInput) -> Result<RouteOutput> {
         let our_node_pubkey = PublicKey::from_str(&input.src_pubkey)
             .map_err(|_| anyhow::anyhow!("Failed to parse source pubkey"))?;
         let route_params = Self::construct_route_params(input);
-        let ldk_graph = self.convert_to_ldk_network_graph(&input.graph);
+        let ldk_graph = self.convert_to_ldk_network_graph(input.graph.as_ref());
         // TODO: What scorer should we use?
         // See: https://github.com/lightningdevkit/rust-lightning/blob/main/lightning/src/routing/scoring.rs#L10-L13
         let scorer = FixedPenaltyScorer::with_penalty(0);

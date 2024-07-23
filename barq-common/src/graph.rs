@@ -77,6 +77,12 @@ pub trait NetworkGraph {
     /// Gets all nodes in the network graph.
     fn get_nodes(&self) -> Vec<&Node>;
 
+    /// Gets a node by its ID.
+    fn get_node(&self, id: &str) -> Option<&Node>;
+
+    /// Gets a channel by its ID.
+    fn get_channel(&self, id: &str) -> Option<&Channel>;
+
     /// Whether or not the network graph has peer-to-peer information (e.g., gossip map).
     fn has_p2p_info(&self) -> bool;
 }
