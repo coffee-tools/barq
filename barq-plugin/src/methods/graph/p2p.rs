@@ -2,8 +2,7 @@
 
 use std::collections::HashMap;
 
-use serde::Deserialize;
-use serde::Serialize;
+use serde::{Deserialize, Serialize};
 
 use clightningrpc_gossip_map::GossipMap;
 use clightningrpc_plugin::{error, errors::PluginError};

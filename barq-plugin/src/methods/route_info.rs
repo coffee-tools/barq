@@ -58,8 +58,8 @@ pub fn barq_route_info(plugin: &mut Plugin<State>, request: Value) -> Result<Val
         .call("getinfo", serde_json::json!({}))
         .map_err(|err| error!("Error calling CLN RPC method: {err}"))?;
 
-    // If the probabilistic strategy is selected, build the network graph from the gossip map
-    // else, build the network graph from the plugin state
+    // If the probabilistic strategy is selected, build the network graph from the
+    // gossip map. Else, build the network graph from the plugin state
     let network_graph: Box<dyn NetworkGraph> =
         match request.strategy().map_err(|e| error!("{e}"))? {
             StrategyKind::Direct => Box::new(build_cln_network_graph(state)?),

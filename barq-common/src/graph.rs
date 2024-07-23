@@ -69,7 +69,8 @@ impl Channel {
     }
 }
 
-/// Trait for handling network graphs with channels, nodes, and peer-to-peer information.
+/// Trait for handling network graphs with channels, nodes, and peer-to-peer
+/// information.
 pub trait NetworkGraph {
     /// Gets all channels in the network graph.
     fn get_channels(&self) -> Vec<&Channel>;
@@ -83,6 +84,7 @@ pub trait NetworkGraph {
     /// Gets a channel by its ID.
     fn get_channel(&self, id: &str) -> Option<&Channel>;
 
-    /// Whether or not the network graph has peer-to-peer information (e.g., gossip map).
+    /// Whether or not the network graph has peer-to-peer information (e.g.,
+    ///  gossip map).
     fn has_p2p_info(&self) -> bool;
 }

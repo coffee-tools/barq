@@ -66,7 +66,8 @@ where
     L: Deref,
     L::Target: Logger,
 {
-    /// Determines if the LDK routing strategy can be applied to the given input.
+    /// Determines if the LDK routing strategy can be applied to the given
+    /// input.
     ///
     /// This method checks if the network graph has the peer-to-peer information
     /// required for LDK routing.
