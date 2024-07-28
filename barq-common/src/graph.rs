@@ -104,8 +104,9 @@ impl NetworkGraph {
     /// Adds an edge (channel) to the network graph.
     pub fn add_edge(&mut self, edge: Edge) {
         self.edges.insert(edge.id.clone(), edge.clone());
-        self.nodes.get_mut(&edge.node1).unwrap().add_channel(&edge);
-        self.nodes.get_mut(&edge.node2).unwrap().add_channel(&edge);
+        if let Some(source_node) = self.nodes.get_mut(&edge.clone().node1) {
+            source_node.add_channel(&edge);
+        }
     }
 
     /// Gets a reference to a node by its ID.

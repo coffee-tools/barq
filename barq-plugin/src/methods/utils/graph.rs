@@ -46,9 +46,6 @@ pub fn build_network_graph(
         if graph.get_node(&channel.source).is_none() {
             graph.add_node(Node::new(&channel.source));
         }
-        if graph.get_node(&channel.destination).is_none() {
-            graph.add_node(Node::new(&channel.destination));
-        }
 
         // Convert amount_msat to u64
         let amount_msat = channel.amount_msat;
