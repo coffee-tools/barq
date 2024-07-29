@@ -39,6 +39,9 @@ pub struct Channel {
     pub delay: u64,
     pub base_fee_millisatoshi: u64,
     pub fee_per_millionth: u64,
+    // FIXME: add the p2p message from in here
+    pub channel_announcement: Option<Vec<u8>>,
+    // FIXME probably also the node one and node 2 announcement.
 }
 
 impl Channel {
@@ -60,6 +63,7 @@ impl Channel {
             delay,
             base_fee_millisatoshi,
             fee_per_millionth,
+            channel_announcement: None,
         }
     }
 

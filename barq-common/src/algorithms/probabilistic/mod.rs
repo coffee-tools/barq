@@ -6,12 +6,14 @@ use anyhow::Result;
 
 use lampo_common::bitcoin::secp256k1::PublicKey;
 use lampo_common::conf::Network;
+use lampo_common::ldk::ln::msgs::ChannelAnnouncement;
 use lampo_common::ldk::routing::gossip::NetworkGraph as LdkNetworkGraph;
 use lampo_common::ldk::routing::router::{find_route, PaymentParameters, Route, RouteParameters};
 use lampo_common::ldk::routing::scoring::{
     ProbabilisticScorer, ProbabilisticScoringDecayParameters, ProbabilisticScoringFeeParameters,
 };
 use lampo_common::ldk::util::logger::Logger;
+use lampo_common::ldk::util::ser::Readable;
 use lampo_common::utils::logger::LampoLogger;
 
 use crate::graph::NetworkGraph;
@@ -55,7 +57,16 @@ where
             self.logger.clone(),
         );
         // FIXME look how to fill the informaton from ldk
-        for _channel in graph.get_channels() {}
+        for channel in graph.get_channels() {
+            // FIXME: we need to set the annouce message insie the channel struct
+            if let Some(msg) = channel.channel_announcement.clone() {
+                let channel_ann = ChannelAnnouncement::read(&mut msg.as_slice())
+                    .map_err(|e| anyhow::anyhow!("{e}"))?;
+                ldkgraph
+                    .update_channel_from_announcement_no_lookup(&channel_ann)
+                    .map_err(|err| anyhow::anyhow!("{:?}", err))?;
+            }
+        }
 
         Ok(Arc::new(ldkgraph))
     }
@@ -158,11 +169,6 @@ mod tests {
 
     #[test]
     fn test_route() {
-        /*
-        Use:
-        - https://github.com/lightningdevkit/rust-lightning/blob/main/lightning/src/routing/test_utils.rs#L185
-        - https://github.com/lightningdevkit/rust-lightning/blob/main/lightning/src/routing/router.rs#L3428
-        to write test cases for the `route` method of `LDKRoutingStrategy`
-         */
+        assert!(false)
     }
 }
