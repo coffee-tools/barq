@@ -5,11 +5,11 @@ use std::sync::Arc;
 use anyhow::Result;
 
 use lampo_common::bitcoin::secp256k1::PublicKey;
+use lampo_common::conf::Network;
 use lampo_common::ldk::routing::gossip::NetworkGraph as LdkNetworkGraph;
-use lampo_common::ldk::routing::router::{find_route, Route, RouteParameters};
+use lampo_common::ldk::routing::router::{find_route, PaymentParameters, Route, RouteParameters};
 use lampo_common::ldk::routing::scoring::{
-    ProbabilisticScorer, ProbabilisticScoringDecayParameters,
-    ProbabilisticScoringFeeParameters,
+    ProbabilisticScorer, ProbabilisticScoringDecayParameters, ProbabilisticScoringFeeParameters,
 };
 use lampo_common::ldk::util::logger::Logger;
 use lampo_common::utils::logger::LampoLogger;
@@ -24,6 +24,7 @@ where
     L::Target: Logger,
 {
     logger: L,
+    network: Option<Network>,
 }
 
 impl Default for LDKRoutingStrategy<Arc<LampoLogger>> {
@@ -34,26 +35,39 @@ impl Default for LDKRoutingStrategy<Arc<LampoLogger>> {
 
 impl<L> LDKRoutingStrategy<L>
 where
-    L: Deref,
+    L: Deref + Clone,
     L::Target: Logger,
 {
     pub fn new(logger: L) -> Self {
-        Self { logger }
+        Self {
+            logger,
+            network: None,
+        }
     }
 
-    fn convert_to_ldk_network_graph(&self, graph: &dyn NetworkGraph) -> Arc<LdkNetworkGraph<L>> {
-        for channel in graph.get_channels() {
-            // TODO: Convert Channel to LDK ChannelAnnouncement
-            let _channel = channel;
-        }
+    fn convert_to_ldk_network_graph(
+        &self,
+        graph: &dyn NetworkGraph,
+    ) -> anyhow::Result<Arc<LdkNetworkGraph<L>>> {
+        let ldkgraph = LdkNetworkGraph::new(
+            self.network
+                .ok_or(anyhow::anyhow!("Network not specified, please set it."))?,
+            self.logger.clone(),
+        );
+        // FIXME look how to fill the informaton from ldk
+        for _channel in graph.get_channels() {}
 
-        unimplemented!("convert_to_ldk_network_graph not implemented yet.")
+        Ok(Arc::new(ldkgraph))
     }
 
     fn construct_route_params(input: &RouteInput) -> RouteParameters {
-        // TODO: Implement the logic to construct RouteParameters from the given input
-        let _input = input;
-        unimplemented!("construct_route_params not implemented yet.")
+        // SAFETY: safe to unwrap because it should be a valid pub key
+        let payment_params = PaymentParameters::from_node_id(
+            PublicKey::from_str(&input.dest_pubkey).unwrap(),
+            B
+            input.cltv as u32,
+        );
+        RouteParameters::from_payment_params_and_value(payment_params, input.amount_msat)
     }
 
     fn convert_route_to_output(route: Route) -> RouteOutput {
@@ -104,11 +118,16 @@ where
         Ok(false)
     }
 
+    fn set_network(&mut self, network: &str) -> anyhow::Result<()> {
+        self.network = Some(Network::from_str(network)?);
+        Ok(())
+    }
+
     fn route(&self, input: &RouteInput) -> Result<RouteOutput> {
         let our_node_pubkey = PublicKey::from_str(&input.src_pubkey)
             .map_err(|_| anyhow::anyhow!("Failed to parse source pubkey"))?;
         let route_params = Self::construct_route_params(input);
-        let ldk_graph = self.convert_to_ldk_network_graph(input.graph.as_ref());
+        let ldk_graph = self.convert_to_ldk_network_graph(input.graph.as_ref())?;
 
         let parms = ProbabilisticScoringDecayParameters::default();
         let feeparams = ProbabilisticScoringFeeParameters::default();

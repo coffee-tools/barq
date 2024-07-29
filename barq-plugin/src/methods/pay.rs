@@ -102,7 +102,8 @@ pub fn barq_pay(
     let request: BarqPayRequest = json::from_value(request).map_err(|err| error!("{err}"))?;
 
     let state = &plugin.state;
-    let router = Router::default();
+    // SAFETY: the plugin set always the network, otherwise is a bug
+    let router = Router::new(state.network.as_ref().unwrap());
 
     let b11: Bolt11 = state
         .call(

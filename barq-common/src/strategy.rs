@@ -44,6 +44,8 @@ pub trait Strategy {
     /// Route the payment using the strategy
     /// return error if execution unsuccessful
     fn route(&self, input: &RouteInput) -> Result<RouteOutput>;
+
+    fn set_network(&mut self, network: &str) -> anyhow::Result<()>;
 }
 
 /// Represents a single hop in a route between two nodes
@@ -97,38 +99,25 @@ pub struct RouteOutput {
 /// strategies, making it easy to integrate new algorithms into the routing
 /// process.
 pub struct Router {
-    /// A collection of routing strategies that can be used to route payments
-    pub strategies: Vec<Box<dyn Strategy>>,
     // FIXME: Should we have a database here to store routing information?
-}
-
-impl Default for Router {
-    /// Create a new `Router` instance with the default strategies
-    ///
-    /// Default strategies:
-    /// - [`crate::algorithms::direct::Direct`]
-    fn default() -> Self {
-        // SAFETY: We can safely unwrap here because we know that the algorithm exists
-        let direct = get_algorithm(&StrategyKind::Direct).unwrap();
-        let probabilistic = get_algorithm(&StrategyKind::Probabilistic).unwrap();
-        let strategies = vec![direct, probabilistic];
-
-        Router { strategies }
-    }
+    pub network: String,
 }
 
 impl Router {
     /// Create a new `Router` instance with the provided strategies
-    pub fn new(strategies: Vec<Box<dyn Strategy>>) -> Self {
+    pub fn new(network: &str) -> Self {
         // FIXME: Should `strategies` be optional?
         //        The default could be all strategies available
-        Router { strategies }
+        Router {
+            network: network.to_owned(),
+        }
     }
 
     /// Execute the routing process using the best strategy based on input
     pub fn execute(&self, input: &RouteInput) -> Result<RouteOutput> {
-        let best_strategy = get_algorithm(&input.strategy)
+        let mut best_strategy = get_algorithm(&input.strategy)
             .ok_or_else(|| anyhow::anyhow!("No strategy found for the given input"))?;
+        best_strategy.set_network(&self.network)?;
         best_strategy.route(input)
     }
 

@@ -47,8 +47,8 @@ pub struct BarqRouteInfoResponse {
 }
 
 /// Barq RPC method to get route information
-pub fn barq_route_info(plugin: &mut Plugin<State>, request: Value) -> Result<Value, PluginError> {
+pub fn barq_route_info(_: &mut Plugin<State>, request: Value) -> Result<Value, PluginError> {
     log::info!("barqrouteinfo called with request: {}", request);
-    let request: BarqRouteInfoRequest = json::from_value(request).map_err(|err| error!("{err}"))?;
+    let _: BarqRouteInfoRequest = json::from_value(request).map_err(|err| error!("{err}"))?;
     Err(error!("Unimplemented"))
 }
