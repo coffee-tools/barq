@@ -5,7 +5,8 @@ use std::collections::HashMap;
 use serde::{Deserialize, Serialize};
 
 use clightningrpc_gossip_map::GossipMap;
-use clightningrpc_plugin::{error, errors::PluginError};
+use clightningrpc_plugin::error;
+use clightningrpc_plugin::errors::PluginError;
 
 use barq_common::graph::{Channel, NetworkGraph, Node};
 

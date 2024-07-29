@@ -1,9 +1,7 @@
 [workspace]
 
 members = ["barq-common", "barq-plugin"]
-
 default-members = ["barq-common", "barq-plugin"]
-
 resolver = "2"
 
 [workspace.dependencies]
