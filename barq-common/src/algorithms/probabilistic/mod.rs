@@ -7,7 +7,10 @@ use anyhow::Result;
 use lampo_common::bitcoin::secp256k1::PublicKey;
 use lampo_common::ldk::routing::gossip::NetworkGraph as LdkNetworkGraph;
 use lampo_common::ldk::routing::router::{find_route, Route, RouteParameters};
-use lampo_common::ldk::routing::scoring::FixedPenaltyScorer;
+use lampo_common::ldk::routing::scoring::{
+    ProbabilisticScorer, ProbabilisticScoringDecayParameters,
+    ProbabilisticScoringFeeParameters,
+};
 use lampo_common::ldk::util::logger::Logger;
 use lampo_common::utils::logger::LampoLogger;
 
@@ -38,7 +41,7 @@ where
         Self { logger }
     }
 
-    fn convert_to_ldk_network_graph(&self, graph: &dyn NetworkGraph) -> LdkNetworkGraph<L> {
+    fn convert_to_ldk_network_graph(&self, graph: &dyn NetworkGraph) -> Arc<LdkNetworkGraph<L>> {
         for channel in graph.get_channels() {
             // TODO: Convert Channel to LDK ChannelAnnouncement
             let _channel = channel;
@@ -83,7 +86,7 @@ where
 
 impl<L> Strategy for LDKRoutingStrategy<L>
 where
-    L: Deref,
+    L: Deref + Clone,
     L::Target: Logger,
 {
     /// Determines if the LDK routing strategy can be applied to the given
@@ -106,10 +109,12 @@ where
             .map_err(|_| anyhow::anyhow!("Failed to parse source pubkey"))?;
         let route_params = Self::construct_route_params(input);
         let ldk_graph = self.convert_to_ldk_network_graph(input.graph.as_ref());
-        // TODO: What scorer should we use?
-        // See: https://github.com/lightningdevkit/rust-lightning/blob/main/lightning/src/routing/scoring.rs#L10-L13
-        let scorer = FixedPenaltyScorer::with_penalty(0);
-        // TODO: Implement the logic to generate random seed bytes
+
+        let parms = ProbabilisticScoringDecayParameters::default();
+        let feeparams = ProbabilisticScoringFeeParameters::default();
+        let scorer = ProbabilisticScorer::new(parms, ldk_graph.as_ref(), self.logger.clone());
+        // TODO: Implement the logic to generate random seed bytes, also if looks like
+        // that the underline code it is not used by ldk
         let random_seed_bytes = [0; 32];
 
         let route = find_route(
@@ -119,9 +124,10 @@ where
             None,
             self.logger.deref(),
             &scorer,
-            &(),
+            &feeparams,
             &random_seed_bytes,
         )
+        // FIXME: we are losing context, we should return an better error for the plugin
         .map_err(|e| anyhow::anyhow!("Failed to find route: {:?}", e))?;
 
         Ok(Self::convert_route_to_output(route))
