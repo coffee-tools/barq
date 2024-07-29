@@ -2,7 +2,7 @@ import os
 
 from pyln.testing.fixtures import *  # noqa: F403
 from pyln.testing.utils import only_one
-from pyln.client import Millisatoshi
+from pyln.client import Millisatoshi, RpcError
 
 barq_binary = os.path.join(os.path.dirname(__file__), "../target/debug/barq-plugin")
 
@@ -41,6 +41,8 @@ def test_pay_without_amounts(node_factory):
 
     invoice = only_one(l2.rpc.listinvoices('test_pay_amounts')['invoices'])
 
+    with pytest.raises(RpcError):
+     l1.rpc.call("barqpay", {"bolt11_invoice": inv})
     l1.rpc.call("barqpay", {"bolt11_invoice": inv, "amount_msat": 123000})
 
     invoice = only_one(l2.rpc.listinvoices('test_pay_amounts')['invoices'])

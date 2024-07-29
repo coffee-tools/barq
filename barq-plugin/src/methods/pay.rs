@@ -36,11 +36,12 @@ enum Status {
 }
 
 /// Request payload for Barq pay RPC method
+// If no value is provided for `amount_msat`, `None` is chosen as the default.
 #[derive(Deserialize, Serialize, Debug)]
 pub struct BarqPayRequest {
     pub bolt11_invoice: String,
     #[serde(default)]
-    pub amount_msat: Option<u64>
+    pub amount_msat: Option<u64>,
 }
 
 /// Response payload for Barq pay RPC method
@@ -97,14 +98,10 @@ pub fn barq_pay(
         )
         .map_err(|err| error!("Error calling CLN RPC method: {err}"))?;
 
-    let amt_msat = match b11.amount_msat {
-            Some(amount) => {
-                amount
-            },
-            None => {
-                request.amount_msat.expect("amount_msat parameter required")
-            }
-    };
+    let amt_msat = b11
+        .amount_msat
+        .or(request.amount_msat)
+        .expect("amount_msat parameter required");
 
     // Get the network of the invoice
     // See: https://github.com/lightning/bolts/blob/master/11-payment-encoding.md#human-readable-part
