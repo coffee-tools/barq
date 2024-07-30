@@ -1,4 +1,5 @@
 use core::ops::Deref;
+use std::path;
 use std::str::FromStr;
 use std::sync::Arc;
 
@@ -12,7 +13,7 @@ use lampo_common::ldk::util::logger::Logger;
 use lampo_common::utils::logger::LampoLogger;
 
 use crate::graph::NetworkGraph;
-use crate::strategy::{RouteInput, RouteOutput, Strategy};
+use crate::strategy::{RouteInput, RouteOutput, Strategy, RouteHop};
 
 /// A routing strategy that uses the LDK crates to find the best route.
 pub struct LDKRoutingStrategy<L>
@@ -54,10 +55,18 @@ where
     }
 
     fn convert_route_to_output(route: Route) -> RouteOutput {
-        let _route = route;
-        // TODO: Implement the logic to convert the LDK Route to RouteOutput
+        let path = route.paths.first().expect("No LDK path available");
+        let output_path: Vec<RouteHop> = path.hops.iter().map(|hop| {
+            RouteHop::new(
+                hop.pubkey.to_string(),
+                hop.short_channel_id.to_string(),
+                hop.cltv_expiry_delta,
+                hop.fee_msat,
+            )
+        }).collect();
 
-        unimplemented!("convert_route_to_output not implemented yet.")
+        // TODO: Implement the logic to convert the LDK Route to RouteOutput
+        RouteOutput { path: output_path }
     }
 }
 

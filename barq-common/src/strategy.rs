@@ -24,13 +24,13 @@ pub trait Strategy {
 pub struct RouteHop {
     pub id: String,
     pub channel: String,
-    pub delay: u64,
+    pub delay: u32,
     pub amount_msat: u64,
 }
 
 impl RouteHop {
     /// Create a new `RouteHop` instance with the provided fields
-    pub fn new(id: String, channel: String, delay: u64, amount_msat: u64) -> Self {
+    pub fn new(id: String, channel: String, delay: u32, amount_msat: u64) -> Self {
         RouteHop {
             id,
             channel,

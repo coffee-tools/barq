@@ -2,7 +2,7 @@ use anyhow::Result;
 
 use crate::strategy::{RouteHop, RouteInput, RouteOutput, Strategy};
 
-const DEFAULT_DELAY: u64 = 9;
+const DEFAULT_DELAY: u32 = 9;
 
 /// A routing strategy that attempts to find a direct route from the source to
 /// the destination.
