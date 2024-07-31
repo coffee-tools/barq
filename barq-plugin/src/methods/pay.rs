@@ -43,7 +43,7 @@ enum Status {
 pub struct BarqPayRequest {
     pub bolt11_invoice: String,
     /// The strategy to use for routing the payment
-    #[serde(skip_serializing_if = "Option::is_none")]
+    #[serde(default)]
     pub strategy: Option<String>,
 }
 
