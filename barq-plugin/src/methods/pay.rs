@@ -39,9 +39,12 @@ enum Status {
 }
 
 /// Request payload for Barq pay RPC method
+// serde(default) sets the default value to None if no input is given.
 #[derive(Deserialize, Serialize)]
 pub struct BarqPayRequest {
     pub bolt11_invoice: String,
+    #[serde(default)]
+    pub amount_msat: Option<u64>,
     /// The strategy to use for routing the payment
     #[serde(default)]
     pub strategy: Option<String>,
@@ -74,7 +77,7 @@ struct Bolt11 {
     /// The BIP173 name for the currency
     currency: String,
     payee: String,
-    amount_msat: u64,
+    amount_msat: Option<u64>,
     payment_hash: String,
     min_final_cltv_expiry: u64,
     payment_secret: String, // FIXME: Should this be optional?
@@ -124,6 +127,14 @@ pub fn barq_pay(
         .call("getinfo", serde_json::json!({}))
         .map_err(|err| error!("Error calling CLN RPC method: {err}"))?;
 
+    let amount = match (b11.amount_msat, request.amount_msat) {
+        (Some(_), Some(_)) => {
+            return Err(error!("barqpay execution failed: amount_msat not required"))
+        }
+        (Some(amount), None) | (None, Some(amount)) => amount,
+        (None, None) => return Err(error!("barqpay execution failed: amount_msat not required")),
+    };
+
     let node_network = node_info.network.as_str();
 
     if invoice_network != node_network {
@@ -144,7 +155,7 @@ pub fn barq_pay(
     let input = RouteInput {
         src_pubkey: node_info.id.clone(),
         dest_pubkey: b11.payee.clone(),
-        amount_msat: b11.amount_msat,
+        amount_msat: amount,
         cltv: b11.min_final_cltv_expiry,
         graph: network_graph,
         strategy: request.strategy().map_err(|e| error!("{e}"))?,
