@@ -43,10 +43,6 @@ impl CLNNetworkGraph {
             .get_mut(&channel.node1)
             .unwrap()
             .add_channel(&channel);
-        self.nodes
-            .get_mut(&channel.node2)
-            .unwrap()
-            .add_channel(&channel);
     }
 }
 
@@ -106,9 +102,6 @@ pub fn build_cln_network_graph(state: &State) -> Result<CLNNetworkGraph, PluginE
         // Add nodes to the graph
         if graph.get_node(&channel.source).is_none() {
             graph.add_node(Node::new(&channel.source));
-        }
-        if graph.get_node(&channel.destination).is_none() {
-            graph.add_node(Node::new(&channel.destination));
         }
 
         // Convert amount_msat to u64
