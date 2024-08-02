@@ -165,6 +165,9 @@ pub fn barq_pay(
     let router_output = router.execute(&input);
     let response = match router_output {
         Ok(output) => {
+            if output.path.is_empty() {
+                return Err(error!("No route found between us and `{}`", b11.payee));
+            }
             let sendpay_request: json::Value = serde_json::json!({
                 "route": output.path,
                 "payment_hash": b11.payment_hash,
@@ -190,11 +193,7 @@ pub fn barq_pay(
                 response: Some(waitsendpay_response),
             }
         }
-        Err(err) => BarqPayResponse {
-            status: "failure".to_string(),
-            message: Some(format!("barqpay execution failed: {}", err)),
-            response: None,
-        },
+        Err(err) => return Err(error!("{err}")),
     };
 
     Ok(json::to_value(response)?)
