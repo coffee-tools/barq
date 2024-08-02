@@ -94,9 +94,7 @@ pub fn build_p2p_network_graph(state: &State) -> Result<P2PNetworkGraph, PluginE
         )
     })?;
     // SAFETY: It is safe to unwrap here because the plugin init the network always.
-    let gossip_map_path = lightning_path
-        .join(state.network.as_ref().unwrap())
-        .join("gossip_store");
+    let gossip_map_path = lightning_path.join("gossip_store");
     let gossip_map_path = gossip_map_path.to_str().ok_or_else(|| {
         error!(
             "Failed to convert gossip map path to string: {:?}",
