@@ -79,3 +79,20 @@ def test_pay_fail_when_there_is_no_channel(node_factory):
     # Sanity check
     invoice = only_one(l2.rpc.listinvoices('test_pay_amounts')['invoices'])
     assert invoice['status'] == 'unpaid'
+
+
+def test_pay_with_ldk_algo(node_factory):
+    """Try LDK algorithm"""
+    l1, l2 = node_factory.line_graph(2, opts=[{"plugin": barq_binary }, { "plugin": barq_binary}], wait_for_announce=True)
+    inv = l2.rpc.invoice("any", 'test_pay_amounts', 'description')['bolt11']
+
+    invoice = only_one(l2.rpc.listinvoices('test_pay_amounts')['invoices'])
+
+    # we fail when there is no amount inside the invoice and we do not
+    # specify the amount inside the pay command
+    with pytest.raises(RpcError):
+        l1.rpc.call("barqpay", {"bolt11_invoice": inv, "strategy": "probabilistic"})
+    l1.rpc.call("barqpay", {"bolt11_invoice": inv, "strategy": "probabilistic", "amount_msat": 123000})
+
+    invoice = only_one(l2.rpc.listinvoices('test_pay_amounts')['invoices'])
+    assert invoice['status'] == 'paid'
