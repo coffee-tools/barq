@@ -9,6 +9,7 @@ edition = "2021"
 serde = { workspace = true }
 anyhow = { workspace = true }
 log = "0.4"
+hex = "*"
 
 # Dependencies to visualize the graph
 petgraph = "0.6"
@@ -16,3 +17,5 @@ petgraph = "0.6"
 # Dependencies to use LDK routing strategy
 # Note: For now, using ldk_logger branch of lampo.rs (should be merged the next release)
 lampo-common = { git = "https://github.com/vincenzopalazzo/lampo.rs.git", branch = "next" }
+# FIXME: put this under a feature flag
+clightningrpc_gossip_map = { version = "0.0.1-beta.5" }

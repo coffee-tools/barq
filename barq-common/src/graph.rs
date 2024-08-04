@@ -1,3 +1,6 @@
+use clightningrpc_gossip_map::bolt::bolt7::ChannelAnnouncement;
+use clightningrpc_gossip_map::core::ToWire;
+use clightningrpc_gossip_map::gossip_types::GossipChannel;
 use serde::{Deserialize, Serialize};
 
 /// Represents a node in the network graph.
@@ -70,6 +73,25 @@ impl Channel {
     /// Sets the capacity of the channel.
     pub fn set_capacity(&mut self, capacity: u64) {
         self.capacity = capacity;
+    }
+}
+
+impl From<GossipChannel> for Channel {
+    fn from(value: GossipChannel) -> Self {
+        // FIXME: we should encode the channel id
+        let mut val = Self::new(
+            &hex::encode(value.inner.short_channel_id),
+            &hex::encode(value.inner.node_id_1),
+            &hex::encode(value.inner.node_id_2),
+            value.satoshi.unwrap(),
+            0,
+            0,
+            0,
+        );
+        let mut buffer = Vec::new();
+        value.inner.to_wire(&mut buffer).unwrap();
+        val.channel_announcement = Some(buffer);
+        val
     }
 }
 

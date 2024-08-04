@@ -55,6 +55,8 @@ name = "barq-common"
 version = "0.0.1"
 dependencies = [
  "anyhow",
+ "clightningrpc_gossip_map",
+ "hex",
  "lampo-common",
  "log",
  "petgraph",
@@ -212,8 +214,9 @@ dependencies = [
 
 [[package]]
 name = "clightningrpc_gossip_map"
-version = "0.0.1-beta.2"
-source = "git+https://github.com/laanwj/cln4rust.git#59917c2dcb3b3a588c8bf4262200ec280ee22a99"
+version = "0.0.1-beta.5"
+source = "registry+https://github.com/rust-lang/crates.io-index"
+checksum = "3ced6471107ecda8a5bd084eb5bbb36730d52646f17e0d0fcb7967de58a9ba0e"
 dependencies = [
  "anyhow",
  "bitcoin",

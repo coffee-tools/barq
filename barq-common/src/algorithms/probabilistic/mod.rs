@@ -56,7 +56,6 @@ where
                 .ok_or(anyhow::anyhow!("Network not specified, please set it."))?,
             self.logger.clone(),
         );
-        // FIXME look how to fill the informaton from ldk
         for channel in graph.get_channels() {
             // FIXME: we need to set the annouce message insie the channel struct
             if let Some(msg) = channel.channel_announcement.clone() {
@@ -75,7 +74,6 @@ where
         // SAFETY: safe to unwrap because it should be a valid pub key
         let payment_params = PaymentParameters::from_node_id(
             PublicKey::from_str(&input.dest_pubkey).unwrap(),
-            B
             input.cltv as u32,
         );
         RouteParameters::from_payment_params_and_value(payment_params, input.amount_msat)
@@ -140,6 +138,7 @@ where
         let route_params = Self::construct_route_params(input);
         let ldk_graph = self.convert_to_ldk_network_graph(input.graph.as_ref())?;
 
+        // FIXME: We should check if there is a better way for this.
         let parms = ProbabilisticScoringDecayParameters::default();
         let feeparams = ProbabilisticScoringFeeParameters::default();
         let scorer = ProbabilisticScorer::new(parms, ldk_graph.as_ref(), self.logger.clone());
@@ -161,14 +160,5 @@ where
         .map_err(|e| anyhow::anyhow!("Failed to find route: {:?}", e))?;
 
         Ok(Self::convert_route_to_output(route))
-    }
-}
-
-#[cfg(test)]
-mod tests {
-
-    #[test]
-    fn test_route() {
-        assert!(false)
     }
 }

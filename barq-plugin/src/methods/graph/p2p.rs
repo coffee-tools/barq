@@ -43,11 +43,11 @@ impl P2PNetworkGraph {
         self.channels.insert(channel.id.clone(), channel.clone());
         self.nodes
             .get_mut(&channel.node1)
-            .unwrap()
+            .unwrap_or(&mut Node::new(&channel.node1))
             .add_channel(&channel);
         self.nodes
             .get_mut(&channel.node2)
-            .unwrap()
+            .unwrap_or(&mut Node::new(&channel.node1))
             .add_channel(&channel);
     }
 }
@@ -76,7 +76,7 @@ impl NetworkGraph for P2PNetworkGraph {
 
 /// Function to build the network graph using the plugin state.
 pub fn build_p2p_network_graph(state: &State) -> Result<P2PNetworkGraph, PluginError> {
-    let graph = P2PNetworkGraph::new();
+    let mut graph = P2PNetworkGraph::new();
     // Get the gossip map path from the plugin state
     // FIXME: Currently, we are loading the gossip map from the file system
     //        each time the `barqpay` method is called. This is not efficient.
@@ -104,6 +104,8 @@ pub fn build_p2p_network_graph(state: &State) -> Result<P2PNetworkGraph, PluginE
     let gossip_map = GossipMap::from_file(gossip_map_path)
         .map_err(|err| error!("Error reading gossip map from file: {err}"))?;
 
-    // TODO: Use the gossip map to build the network graph
+    for channel in gossip_map.channels.values() {
+        graph.add_channel(channel.clone().into())
+    }
     Ok(graph)
 }
