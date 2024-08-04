@@ -12,7 +12,7 @@ use lampo_common::ldk::util::logger::Logger;
 use lampo_common::utils::logger::LampoLogger;
 
 use crate::graph::NetworkGraph;
-use crate::strategy::{RouteInput, RouteOutput, Strategy};
+use crate::strategy::{RouteHop, RouteInput, RouteOutput, Strategy};
 
 /// A routing strategy that uses the LDK crates to find the best route.
 pub struct LDKRoutingStrategy<L>
@@ -54,10 +54,30 @@ where
     }
 
     fn convert_route_to_output(route: Route) -> RouteOutput {
-        let _route = route;
-        // TODO: Implement the logic to convert the LDK Route to RouteOutput
+        let path = route.paths.first().expect("No LDK path available");
+        let mut amt_to_forward = 0;
+        let mut delay = 0;
 
-        unimplemented!("convert_route_to_output not implemented yet.")
+        let output_path: Vec<RouteHop> = path
+            .hops
+            .iter()
+            .rev()
+            .map(|hop| {
+                amt_to_forward += hop.fee_msat;
+                delay += hop.cltv_expiry_delta;
+
+                RouteHop::new(
+                    hop.pubkey.to_string(),
+                    hop.short_channel_id.to_string(),
+                    delay,
+                    amt_to_forward,
+                )
+            })
+            .collect();
+
+        RouteOutput {
+            path: output_path.into_iter().rev().collect(),
+        }
     }
 }
 
