@@ -50,43 +50,5 @@ pub struct BarqRouteInfoResponse {
 pub fn barq_route_info(plugin: &mut Plugin<State>, request: Value) -> Result<Value, PluginError> {
     log::info!("barqrouteinfo called with request: {}", request);
     let request: BarqRouteInfoRequest = json::from_value(request).map_err(|err| error!("{err}"))?;
-
-    let state = &plugin.state;
-    let router = Router::default();
-
-    let node_info: NodeInfo = state
-        .call("getinfo", serde_json::json!({}))
-        .map_err(|err| error!("Error calling CLN RPC method: {err}"))?;
-
-    // If the probabilistic strategy is selected, build the network graph from the
-    // gossip map. Else, build the network graph from the plugin state
-    let network_graph: Box<dyn NetworkGraph> =
-        match request.strategy().map_err(|e| error!("{e}"))? {
-            StrategyKind::Direct => Box::new(build_cln_network_graph(state)?),
-            StrategyKind::Probabilistic => Box::new(build_p2p_network_graph(state)?),
-        };
-    let input = RouteInput {
-        src_pubkey: node_info.id.clone(),
-        dest_pubkey: request.dest_pubkey.clone(),
-        amount_msat: request.amount_msat,
-        cltv: request.cltv,
-        graph: network_graph,
-        strategy: request.strategy().map_err(|e| error!("{e}"))?,
-    };
-
-    let output = router.execute(&input);
-    let response = match output {
-        Ok(output) => BarqRouteInfoResponse {
-            status: "success".to_string(),
-            message: None,
-            route_info: Some(output.path),
-        },
-        Err(err) => BarqRouteInfoResponse {
-            status: "failure".to_string(),
-            message: Some(format!("barqrouteinfo execution failed: {}", err)),
-            route_info: None,
-        },
-    };
-
-    Ok(json::to_value(response)?)
+    Err(error!("Unimplemented"))
 }
