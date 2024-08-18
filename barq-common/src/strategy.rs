@@ -7,7 +7,7 @@ use serde::{Deserialize, Serialize};
 use crate::algorithms::get_algorithm;
 use crate::graph::NetworkGraph;
 
-#[derive(Debug)]
+#[derive(Debug, PartialEq, Eq)]
 pub enum StrategyKind {
     Direct,
     Probabilistic,
@@ -79,6 +79,12 @@ pub struct RouteInput {
     pub graph: Box<dyn NetworkGraph>,
     /// Strategy to use for routing
     pub strategy: StrategyKind,
+    /// Whether to use the rapid gossip sync map to build the network graph
+    /// (Only applicable when the probabilistic strategy is selected)
+    ///
+    /// If not provided, we will try to use CLN gossip map to build the network
+    /// graph
+    pub use_rapid_gossip_sync: bool,
 }
 
 /// Represents the output of a routing strategy
@@ -115,7 +121,18 @@ impl Router {
 
     /// Execute the routing process using the best strategy based on input
     pub fn execute(&self, input: &RouteInput) -> Result<RouteOutput> {
-        let mut best_strategy = get_algorithm(&input.strategy)
+        let mut strategy = &input.strategy;
+
+        // rapid gossip sync can only be used with the probabilistic strategy
+        if input.use_rapid_gossip_sync && input.strategy != StrategyKind::Probabilistic {
+            log::warn!(
+                "Rapid gossip sync can only be used with the probabilistic strategy. Ignoring specified strategy {:?}. Using probabilistic strategy instead.",
+                input.strategy
+            );
+            strategy = &StrategyKind::Probabilistic;
+        }
+
+        let mut best_strategy = get_algorithm(strategy)
             .ok_or_else(|| anyhow::anyhow!("No strategy found for the given input"))?;
         best_strategy.set_network(&self.network)?;
         best_strategy.route(input)

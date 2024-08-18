@@ -19,3 +19,6 @@ petgraph = "0.6"
 lampo-common = { git = "https://github.com/vincenzopalazzo/lampo.rs.git", branch = "next" }
 # FIXME: put this under a feature flag
 clightningrpc_gossip_map = { version = "0.0.1-beta.5" }
+# FIXME: put this under another feature flag
+lightning-rapid-gossip-sync = "0.0.123"
+reqwest = { version = "0.12", features = ["blocking", "json"] }

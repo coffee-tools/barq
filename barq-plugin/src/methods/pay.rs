@@ -48,6 +48,12 @@ pub struct BarqPayRequest {
     /// The strategy to use for routing the payment
     #[serde(default)]
     pub strategy: Option<String>,
+    /// Whether to use the rapid gossip sync map to build the network graph
+    ///
+    /// If false, we will try to use CLN gossip map to build the network
+    /// graph
+    #[serde(default)]
+    pub use_rapid_gossip_sync: bool,
 }
 
 impl BarqPayRequest {
@@ -160,6 +166,7 @@ pub fn barq_pay(
         cltv: b11.min_final_cltv_expiry,
         graph: network_graph,
         strategy: request.strategy().map_err(|e| error!("{e}"))?,
+        use_rapid_gossip_sync: request.use_rapid_gossip_sync,
     };
 
     // Execute the routing process

@@ -3,6 +3,7 @@ use std::str::FromStr;
 use std::sync::Arc;
 
 use anyhow::Result;
+use reqwest::blocking;
 
 use lampo_common::bitcoin::secp256k1::PublicKey;
 use lampo_common::conf::Network;
@@ -15,6 +16,7 @@ use lampo_common::ldk::routing::scoring::{
 use lampo_common::ldk::util::logger::Logger;
 use lampo_common::ldk::util::ser::Readable;
 use lampo_common::utils::logger::LampoLogger;
+use lightning_rapid_gossip_sync::RapidGossipSync;
 
 use crate::graph::NetworkGraph;
 use crate::strategy::{RouteHop, RouteInput, RouteOutput, Strategy};
@@ -31,7 +33,9 @@ where
 
 impl Default for LDKRoutingStrategy<Arc<LampoLogger>> {
     fn default() -> Self {
-        Self::new(Arc::new(LampoLogger::new()))
+        Self {
+            logger: Arc::new(LampoLogger::new()),
+        }
     }
 }
 
@@ -105,6 +109,26 @@ where
             path: output_path.into_iter().rev().collect(),
         }
     }
+
+    fn rapid_gossip_sync_network(&self) -> Result<LdkNetworkGraph<&L>> {
+        let network = Network::Bitcoin;
+
+        let graph = LdkNetworkGraph::new(network, &self.logger);
+        let rapid_sync = RapidGossipSync::new(&graph, &self.logger);
+
+        // Download the snapshot data
+        // For more information, see: https://docs.rs/lightning-rapid-gossip-sync/latest/lightning_rapid_gossip_sync/#getting-started
+        let response = blocking::get("https://rapidsync.lightningdevkit.org/snapshot/0")?;
+        let snapshot_contents = response.bytes()?;
+
+        rapid_sync
+            .update_network_graph(&snapshot_contents)
+            .map_err(|e| {
+                anyhow::anyhow!("Failed to update network graph with snapshot: {:?}", e)
+            })?;
+
+        Ok(graph)
+    }
 }
 
 impl<L> Strategy for LDKRoutingStrategy<L>
@@ -115,10 +139,11 @@ where
     /// Determines if the LDK routing strategy can be applied to the given
     /// input.
     ///
-    /// This method checks if the network graph has the peer-to-peer information
-    /// required for LDK routing.
+    /// This method checks if the network graph either has:
+    /// - Peer-to-peer information
+    /// - Rapid gossip sync enabled
     fn can_apply(&self, input: &RouteInput) -> Result<bool> {
-        if input.graph.has_p2p_info() {
+        if input.graph.has_p2p_info() || input.use_rapid_gossip_sync {
             return Ok(true);
         }
         log::warn!(
@@ -136,14 +161,19 @@ where
         let our_node_pubkey = PublicKey::from_str(&input.src_pubkey)
             .map_err(|_| anyhow::anyhow!("Failed to parse source pubkey"))?;
         let route_params = Self::construct_route_params(input);
-        let ldk_graph = self.convert_to_ldk_network_graph(input.graph.as_ref())?;
+
+        let ldk_graph = if input.use_rapid_gossip_sync {
+            self.rapid_gossip_sync_network()?
+        } else {
+            self.convert_to_ldk_network_graph(input.graph.as_ref())
+        };
 
         // FIXME: We should check if there is a better way for this.
         let parms = ProbabilisticScoringDecayParameters::default();
         let feeparams = ProbabilisticScoringFeeParameters::default();
         let scorer = ProbabilisticScorer::new(parms, ldk_graph.as_ref(), self.logger.clone());
-        // TODO: Implement the logic to generate random seed bytes, also if looks like
-        // that the underline code it is not used by ldk
+
+        // FIXME: Implement the logic to generate random seed bytes
         let random_seed_bytes = [0; 32];
 
         let route = find_route(
