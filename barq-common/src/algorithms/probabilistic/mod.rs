@@ -24,7 +24,7 @@ use crate::strategy::{RouteHop, RouteInput, RouteOutput, Strategy};
 /// A routing strategy that uses the LDK crates to find the best route.
 pub struct LDKRoutingStrategy<L>
 where
-    L: Deref,
+    L: Deref + Clone,
     L::Target: Logger,
 {
     logger: L,
@@ -35,6 +35,7 @@ impl Default for LDKRoutingStrategy<Arc<LampoLogger>> {
     fn default() -> Self {
         Self {
             logger: Arc::new(LampoLogger::new()),
+            network: None,
         }
     }
 }
@@ -54,12 +55,13 @@ where
     fn convert_to_ldk_network_graph(
         &self,
         graph: &dyn NetworkGraph,
-    ) -> anyhow::Result<Arc<LdkNetworkGraph<L>>> {
+    ) -> anyhow::Result<LdkNetworkGraph<L>> {
         let ldkgraph = LdkNetworkGraph::new(
             self.network
                 .ok_or(anyhow::anyhow!("Network not specified, please set it."))?,
             self.logger.clone(),
         );
+
         for channel in graph.get_channels() {
             // FIXME: we need to set the annouce message insie the channel struct
             if let Some(msg) = channel.channel_announcement.clone() {
@@ -71,7 +73,7 @@ where
             }
         }
 
-        Ok(Arc::new(ldkgraph))
+        Ok(ldkgraph)
     }
 
     fn construct_route_params(input: &RouteInput) -> RouteParameters {
@@ -110,9 +112,9 @@ where
         }
     }
 
-    fn rapid_gossip_sync_network(&self, network: Network) -> Result<LdkNetworkGraph<&L>> {
-        let graph = LdkNetworkGraph::new(network, &self.logger);
-        let rapid_sync = RapidGossipSync::new(&graph, &self.logger);
+    fn rapid_gossip_sync_network(&self, network: Network) -> Result<LdkNetworkGraph<L>> {
+        let graph = LdkNetworkGraph::new(network, self.logger.clone());
+        let rapid_sync = RapidGossipSync::new(&graph, self.logger.clone());
 
         // Download the snapshot data
         // For more information, see: https://docs.rs/lightning-rapid-gossip-sync/latest/lightning_rapid_gossip_sync/#getting-started
@@ -163,13 +165,13 @@ where
         let ldk_graph = if input.use_rapid_gossip_sync {
             self.rapid_gossip_sync_network(input.network)?
         } else {
-            self.convert_to_ldk_network_graph(input.graph.as_ref())
+            self.convert_to_ldk_network_graph(input.graph.as_ref())?
         };
 
         // FIXME: We should check if there is a better way for this.
         let parms = ProbabilisticScoringDecayParameters::default();
         let feeparams = ProbabilisticScoringFeeParameters::default();
-        let scorer = ProbabilisticScorer::new(parms, ldk_graph.as_ref(), self.logger.clone());
+        let scorer = ProbabilisticScorer::new(parms, &ldk_graph, self.logger.clone());
 
         // FIXME: Implement the logic to generate random seed bytes
         let random_seed_bytes = [0; 32];
