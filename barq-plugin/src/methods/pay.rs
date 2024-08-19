@@ -9,6 +9,7 @@ use clightningrpc_plugin::plugin::Plugin;
 
 use barq_common::graph::NetworkGraph;
 use barq_common::strategy::{RouteInput, Router, StrategyKind};
+use barq_common::Network;
 
 use crate::methods::graph::cln::build_cln_network_graph;
 use crate::methods::graph::p2p::build_p2p_network_graph;
@@ -123,11 +124,11 @@ pub fn barq_pay(
     // Get the network of the invoice
     // See: https://github.com/lightning/bolts/blob/master/11-payment-encoding.md#human-readable-part
     let invoice_network = match b11.currency.as_str() {
-        "bc" => "bitcoin",
-        "tb" => "testnet",
-        "tbs" => "signet",
-        "bcrt" => "regtest",
-        _ => "unknown",
+        "bc" => Network::Bitcoin,
+        "tb" => Network::Testnet,
+        "tbs" => Network::Signet,
+        "bcrt" => Network::Signet,
+        _ => return Err(error!("Unknown currency: {}", b11.currency)),
     };
 
     let node_info: NodeInfo = state
@@ -142,7 +143,8 @@ pub fn barq_pay(
         (None, None) => return Err(error!("barqpay execution failed: amount_msat not required")),
     };
 
-    let node_network = node_info.network.as_str();
+    let node_network = node_info.network;
+    let node_network = Network::from_str(&node_network).map_err(|e| error!("{e}"))?;
 
     if invoice_network != node_network {
         return Err(error!(
@@ -162,7 +164,7 @@ pub fn barq_pay(
     let input = RouteInput {
         src_pubkey: node_info.id.clone(),
         dest_pubkey: b11.payee.clone(),
-        network: node_network.to_string(),
+        network: node_network,
         amount_msat: amount,
         cltv: b11.min_final_cltv_expiry,
         graph: network_graph,
