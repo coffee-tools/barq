@@ -3,6 +3,8 @@ use std::str::FromStr;
 use anyhow::Result;
 use serde::{Deserialize, Serialize};
 
+use lampo_common::conf::Network;
+
 // FIXME: this should be a builder pattern.
 use crate::algorithms::get_algorithm;
 use crate::graph::NetworkGraph;
@@ -73,6 +75,7 @@ impl RouteHop {
 pub struct RouteInput {
     pub src_pubkey: String,
     pub dest_pubkey: String,
+    pub network: Network,
     pub amount_msat: u64,
     pub cltv: u64,
     /// The network graph used for routing

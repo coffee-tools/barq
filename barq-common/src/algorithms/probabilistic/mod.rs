@@ -110,9 +110,7 @@ where
         }
     }
 
-    fn rapid_gossip_sync_network(&self) -> Result<LdkNetworkGraph<&L>> {
-        let network = Network::Bitcoin;
-
+    fn rapid_gossip_sync_network(&self, network: Network) -> Result<LdkNetworkGraph<&L>> {
         let graph = LdkNetworkGraph::new(network, &self.logger);
         let rapid_sync = RapidGossipSync::new(&graph, &self.logger);
 
@@ -163,7 +161,7 @@ where
         let route_params = Self::construct_route_params(input);
 
         let ldk_graph = if input.use_rapid_gossip_sync {
-            self.rapid_gossip_sync_network()?
+            self.rapid_gossip_sync_network(input.network)?
         } else {
             self.convert_to_ldk_network_graph(input.graph.as_ref())
         };

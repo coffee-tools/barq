@@ -162,6 +162,7 @@ pub fn barq_pay(
     let input = RouteInput {
         src_pubkey: node_info.id.clone(),
         dest_pubkey: b11.payee.clone(),
+        network: node_network.to_string(),
         amount_msat: amount,
         cltv: b11.min_final_cltv_expiry,
         graph: network_graph,
