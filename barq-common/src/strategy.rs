@@ -9,7 +9,7 @@ use lampo_common::conf::Network;
 use crate::algorithms::get_algorithm;
 use crate::graph::NetworkGraph;
 
-#[derive(Debug, PartialEq, Eq)]
+#[derive(Debug, PartialEq, Eq, Clone)]
 pub enum StrategyKind {
     Direct,
     Probabilistic,
@@ -124,7 +124,7 @@ impl Router {
 
     /// Execute the routing process using the best strategy based on input
     pub fn execute(&self, input: &RouteInput) -> Result<RouteOutput> {
-        let mut strategy = &input.strategy;
+        let mut strategy = input.strategy.clone();
 
         // rapid gossip sync can only be used with the probabilistic strategy
         if input.use_rapid_gossip_sync && input.strategy != StrategyKind::Probabilistic {
@@ -132,10 +132,10 @@ impl Router {
                 "Rapid gossip sync can only be used with the probabilistic strategy. Ignoring specified strategy {:?}. Using probabilistic strategy instead.",
                 input.strategy
             );
-            strategy = &StrategyKind::Probabilistic;
+            strategy = StrategyKind::Probabilistic;
         }
 
-        let mut best_strategy = get_algorithm(strategy)
+        let mut best_strategy = get_algorithm(&strategy)
             .ok_or_else(|| anyhow::anyhow!("No strategy found for the given input"))?;
         best_strategy.set_network(&self.network)?;
         best_strategy.route(input)
