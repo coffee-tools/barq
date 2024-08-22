@@ -192,3 +192,45 @@ where
         Ok(Self::convert_route_to_output(route))
     }
 }
+
+#[cfg(test)]
+mod tests {
+
+    use super::*;
+    use lampo_common::ldk::util::logger::Record;
+
+    struct DummyLogger {}
+    impl Logger for DummyLogger {
+        fn log(&self, record: Record) {}
+    }
+
+    #[test]
+    fn test_rapid_gossip_sync_network_sanity() {
+        let strategy = LDKRoutingStrategy::new(Arc::new(DummyLogger {}));
+        let network = Network::Bitcoin;
+        let result = strategy.rapid_gossip_sync_network(network);
+
+        assert!(
+            result.is_ok(),
+            "Failed to create a network graph using rapid gossip sync: {:?}",
+            result.err()
+        );
+    }
+
+    #[test]
+    fn test_rapid_gossip_sync_network_not_empty() {
+        let strategy = LDKRoutingStrategy::new(Arc::new(DummyLogger {}));
+        let network = Network::Bitcoin;
+        let graph = strategy.rapid_gossip_sync_network(network).unwrap();
+
+        let read_only_graph = graph.read_only();
+        let channels = read_only_graph.channels();
+        assert!(
+            !channels.is_empty(),
+            "No channels found in the network graph"
+        );
+
+        let nodes = read_only_graph.nodes();
+        assert!(!nodes.is_empty(), "No nodes found in the network graph");
+    }
+}
