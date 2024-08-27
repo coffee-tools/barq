@@ -1,5 +1,3 @@
-#![allow(unused)]
-
 use anyhow::Result;
 
 mod methods;

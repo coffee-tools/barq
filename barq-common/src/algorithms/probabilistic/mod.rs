@@ -118,7 +118,17 @@ where
 
         // Download the snapshot data
         // For more information, see: https://docs.rs/lightning-rapid-gossip-sync/latest/lightning_rapid_gossip_sync/#getting-started
-        let response = blocking::get("https://rapidsync.lightningdevkit.org/snapshot/0")?;
+        let rapid_gossip_sync_url = match network {
+            Network::Bitcoin => "https://rapidsync.lightningdevkit.org/snapshot/0",
+            Network::Testnet => "https://rapidsync.lightningdevkit.org/testnet/snapshot/0",
+            _ => {
+                return Err(anyhow::anyhow!(
+                    "Rapid gossip sync is not supported for the given network: {:?}. Please use either Bitcoin or Testnet",
+                    network
+                ))
+            }
+        };
+        let response = blocking::get(rapid_gossip_sync_url)?;
         let snapshot_contents = response.bytes()?;
 
         rapid_sync
@@ -201,13 +211,26 @@ mod tests {
 
     struct DummyLogger {}
     impl Logger for DummyLogger {
-        fn log(&self, record: Record) {}
+        fn log(&self, _: Record) {}
     }
 
     #[test]
     fn test_rapid_gossip_sync_network_sanity() {
         let strategy = LDKRoutingStrategy::new(Arc::new(DummyLogger {}));
         let network = Network::Bitcoin;
+        let result = strategy.rapid_gossip_sync_network(network);
+
+        assert!(
+            result.is_ok(),
+            "Failed to create a network graph using rapid gossip sync: {:?}",
+            result.err()
+        );
+    }
+
+    #[test]
+    fn test_rapid_gossip_sync_network_testnet() {
+        let strategy = LDKRoutingStrategy::new(Arc::new(DummyLogger {}));
+        let network = Network::Testnet;
         let result = strategy.rapid_gossip_sync_network(network);
 
         assert!(
