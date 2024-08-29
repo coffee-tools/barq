@@ -87,7 +87,7 @@ struct Bolt11 {
     amount_msat: Option<u64>,
     payment_hash: String,
     min_final_cltv_expiry: u64,
-    payment_secret: String, // FIXME: Should this be optional?
+    payment_secret: Option<String>,
 }
 
 /// Response from `getinfo` RPC command of Core Lightning
@@ -180,10 +180,12 @@ pub fn barq_pay(
             if output.path.is_empty() {
                 return Err(error!("No route found between us and `{}`", b11.payee));
             }
+            log::info!("path selected by the strategy is: `{:?}`", output.path);
             let sendpay_request: json::Value = serde_json::json!({
                 "route": output.path,
                 "payment_hash": b11.payment_hash,
-                "payment_secret": b11.payment_secret
+                "payment_secret": b11.payment_secret,
+                "partid": 0,
             });
 
             let sendpay_response: CLNSendpayResponse = state
@@ -191,7 +193,8 @@ pub fn barq_pay(
                 .map_err(|err| PluginError::new(err.code, &err.message, err.data))?;
 
             let waitsendpay_request: json::Value = serde_json::json!({
-                "payment_hash": sendpay_response.payment_hash.clone()
+                "payment_hash": sendpay_response.payment_hash.clone(),
+                "partid": 0,
             });
 
             let waitsendpay_response: CLNSendpayResponse = state

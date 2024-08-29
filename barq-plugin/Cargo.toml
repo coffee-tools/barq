@@ -14,7 +14,7 @@ anyhow = { workspace = true }
 # Core lightning-rpc dependencies
 clightningrpc = { git = "https://github.com/laanwj/cln4rust.git" }
 clightningrpc-common = { git = "https://github.com/laanwj/cln4rust.git" }
-clightningrpc-plugin = { git = "https://github.com/laanwj/cln4rust.git" }
+clightningrpc-plugin = { git = "https://github.com/laanwj/cln4rust.git", features = ["log"] }
 clightningrpc-plugin-macros = { git = "https://github.com/laanwj/cln4rust.git" }
 clightningrpc_gossip_map = { version = "0.0.1-beta.4" }
 

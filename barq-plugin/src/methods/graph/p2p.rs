@@ -40,7 +40,8 @@ impl P2PNetworkGraph {
 
     /// Adds a channel to the network graph.
     pub fn add_channel(&mut self, channel: Channel) {
-        self.channels.insert(channel.id.clone(), channel.clone());
+        self.channels
+            .insert(channel.short_channel_id.clone(), channel.clone());
         self.nodes
             .get_mut(&channel.node1)
             .unwrap_or(&mut Node::new(&channel.node1))

@@ -35,7 +35,7 @@ impl Node {
 /// Represents a channel between two nodes in the network graph.
 #[derive(Debug, Serialize, Deserialize, Clone, PartialEq, Eq)]
 pub struct Channel {
-    pub id: String,
+    pub short_channel_id: String,
     pub node1: String,
     pub node2: String,
     pub capacity: u64,
@@ -59,7 +59,7 @@ impl Channel {
         fee_per_millionth: u64,
     ) -> Self {
         Channel {
-            id: id.to_string(),
+            short_channel_id: id.to_string(),
             node1: node1.to_string(),
             node2: node2.to_string(),
             capacity,

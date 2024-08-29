@@ -2,7 +2,6 @@ use std::collections::HashMap;
 
 use serde::{Deserialize, Serialize};
 
-use clightningrpc_plugin::error;
 use clightningrpc_plugin::errors::PluginError;
 
 use barq_common::graph::{Channel, NetworkGraph, Node};
@@ -38,7 +37,8 @@ impl CLNNetworkGraph {
 
     /// Adds a channel to the network graph.
     pub fn add_channel(&mut self, channel: Channel) {
-        self.channels.insert(channel.id.clone(), channel.clone());
+        self.channels
+            .insert(channel.short_channel_id.clone(), channel.clone());
         self.nodes
             .get_mut(&channel.node1)
             .unwrap()
@@ -99,11 +99,6 @@ pub fn build_cln_network_graph(state: &State) -> Result<CLNNetworkGraph, PluginE
 
     // Iterate over the channels to construct the nodes and edges
     for channel in response.channels {
-        // Add nodes to the graph
-        if graph.get_node(&channel.source).is_none() {
-            graph.add_node(Node::new(&channel.source));
-        }
-
         // Convert amount_msat to u64
         let amount_msat = channel.amount_msat;
 

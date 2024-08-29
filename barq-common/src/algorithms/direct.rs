@@ -2,8 +2,6 @@ use anyhow::Result;
 
 use crate::strategy::{RouteHop, RouteInput, RouteOutput, Strategy};
 
-const DEFAULT_DELAY: u32 = 9;
-
 /// A routing strategy that attempts to find a direct route from the source to
 /// the destination.
 ///
@@ -61,20 +59,38 @@ impl Strategy for Direct {
             .get_node(&source)
             .ok_or_else(|| anyhow::anyhow!("Failed to retrieve node from graph"))?;
 
-        let mut path: Vec<RouteHop> = Vec::<RouteHop>::new();
+        let channels = node
+            .channels
+            .iter()
+            .filter(|ch| ch.node1 == input.dest_pubkey || ch.node2 == input.dest_pubkey)
+            .collect::<Vec<_>>();
 
-        for edge in &node.channels {
-            if input.dest_pubkey == edge.node1.clone() || input.dest_pubkey == edge.node2.clone() {
-                let hop = RouteHop::new(
-                    input.dest_pubkey.clone(),
-                    edge.id.clone(),
-                    DEFAULT_DELAY,
-                    input.amount_msat,
-                );
-                path.push(hop);
-            }
+        if channels.is_empty() {
+            anyhow::bail!("No channel with `{}` found", input.dest_pubkey);
         }
 
-        Ok(RouteOutput { path })
+        let channels = channels
+            .iter()
+            .filter(|c| c.capacity >= input.amount_msat)
+            .collect::<Vec<_>>();
+        let Some(channel) = channels.first() else {
+            anyhow::bail!(
+                "No channel with capacity `{}` with peer `{}` found",
+                input.amount_msat,
+                input.dest_pubkey
+            );
+        };
+
+        let hop = RouteHop::new(
+            input.dest_pubkey.clone(),
+            channel.short_channel_id.clone(),
+            input.cltv as u32,
+            // FIXME: Double check for this?
+            input.amount_msat
+                + channel.base_fee_millisatoshi
+                + (channel.fee_per_millionth * input.amount_msat),
+        );
+
+        Ok(RouteOutput { path: vec![hop] })
     }
 }
