@@ -93,7 +93,7 @@ pub fn build_cln_network_graph(state: &State) -> Result<CLNNetworkGraph, PluginE
     // Call the `listchannels` method to get the network information
     let response: CLNListChannelsResponse = state
         .call("listchannels", serde_json::json!({}))
-        .map_err(|err| error!("Error calling `listchannels`: {err}"))?;
+        .map_err(|err| PluginError::new(err.code, &err.message, err.data))?;
 
     let mut graph = CLNNetworkGraph::new();
 

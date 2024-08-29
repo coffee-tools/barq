@@ -1,5 +1,6 @@
 //! Barq Plugin implementation
 
+use clightningrpc_common::errors::{Error, RpcError};
 use serde::de::DeserializeOwned;
 use serde::Serialize;
 use serde_json::Value;
@@ -39,15 +40,29 @@ impl State {
         &self,
         method: &str,
         payload: T,
-    ) -> anyhow::Result<U> {
-        let path = self
-            .cln_rpc_path
-            .as_ref()
-            .ok_or(anyhow::anyhow!("cln socket path not found"))?;
+    ) -> Result<U, RpcError> {
+        let path = self.cln_rpc_path.as_ref().ok_or(RpcError {
+            code: -1,
+            message: "CLN RPC path is unset".to_owned(),
+            data: None,
+        })?;
         let rpc = LightningRPC::new(path);
-        let response: U = rpc.call(method, payload)?;
+        let response = rpc.call::<T, U>(method, payload);
         log::debug!("cln response: {:?}", response);
-        Ok(response)
+        // We need to clean up the errors inside the library a bit
+        match response {
+            Ok(response) => Ok(response),
+            Err(clightningrpc::Error::Rpc(err)) => Err(RpcError {
+                code: err.code,
+                message: err.message,
+                data: err.data,
+            }),
+            Err(err) => Err(RpcError {
+                code: -1,
+                message: format!("{err}"),
+                data: None,
+            }),
+        }
     }
 }
 

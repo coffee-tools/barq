@@ -120,7 +120,7 @@ pub fn barq_pay(
                 "bolt11": request.bolt11_invoice
             }),
         )
-        .map_err(|err| error!("Error calling CLN RPC method: {err}"))?;
+        .map_err(|err| PluginError::new(err.code, &err.message, err.data))?;
 
     // Get the network of the invoice
     // See: https://github.com/lightning/bolts/blob/master/11-payment-encoding.md#human-readable-part
@@ -134,7 +134,7 @@ pub fn barq_pay(
 
     let node_info: NodeInfo = state
         .call("getinfo", serde_json::json!({}))
-        .map_err(|err| error!("Error calling CLN RPC method: {err}"))?;
+        .map_err(|err| PluginError::new(err.code, &err.message, err.data))?;
 
     let amount = match (b11.amount_msat, request.amount_msat) {
         (Some(_), Some(_)) => {
@@ -188,7 +188,7 @@ pub fn barq_pay(
 
             let sendpay_response: CLNSendpayResponse = state
                 .call("sendpay", sendpay_request)
-                .map_err(|err| error!("Error calling sendpay method: {err}"))?;
+                .map_err(|err| PluginError::new(err.code, &err.message, err.data))?;
 
             let waitsendpay_request: json::Value = serde_json::json!({
                 "payment_hash": sendpay_response.payment_hash.clone()
@@ -196,7 +196,7 @@ pub fn barq_pay(
 
             let waitsendpay_response: CLNSendpayResponse = state
                 .call("waitsendpay", waitsendpay_request)
-                .map_err(|err| error!("Error calling waitsendpay method: {err}"))?;
+                .map_err(|err| PluginError::new(err.code, &err.message, err.data))?;
 
             // Construct the response from the output
             BarqPayResponse {
