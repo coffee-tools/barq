@@ -15,8 +15,7 @@ hex = "*"
 petgraph = "0.6"
 
 # Dependencies to use LDK routing strategy
-# Note: For now, using ldk_logger branch of lampo.rs (should be merged the next release)
-lampo-common = { git = "https://github.com/vincenzopalazzo/lampo.rs.git", branch = "next" }
+lampo-common = { git = "https://github.com/vincenzopalazzo/lampo.rs.git" }
 # FIXME: put this under a feature flag
 clightningrpc_gossip_map = { version = "0.0.1-beta.5" }
 # FIXME: put this under another feature flag
