@@ -112,6 +112,7 @@ pub fn barq_pay(
     // SAFETY: the plugin set always the network, otherwise is a bug
     let router = Router::new(state.network.as_ref().unwrap());
 
+    // FIXME: the decodepay is deprecated, we should use `decode`.
     let b11: Bolt11 = state
         .call(
             "decodepay",
@@ -127,7 +128,7 @@ pub fn barq_pay(
         "bc" => Network::Bitcoin,
         "tb" => Network::Testnet,
         "tbs" => Network::Signet,
-        "bcrt" => Network::Signet,
+        "bcrt" => Network::Regtest,
         _ => return Err(error!("Unknown currency: {}", b11.currency)),
     };
 
