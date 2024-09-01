@@ -87,8 +87,6 @@ impl Strategy for Direct {
             input.cltv as u32,
             // FIXME: Double check for this?
             input.amount_msat
-                + channel.base_fee_millisatoshi
-                + (channel.fee_per_millionth * input.amount_msat),
         );
 
         Ok(RouteOutput { path: vec![hop] })

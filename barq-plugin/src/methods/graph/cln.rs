@@ -102,6 +102,10 @@ pub fn build_cln_network_graph(state: &State) -> Result<CLNNetworkGraph, PluginE
         // Convert amount_msat to u64
         let amount_msat = channel.amount_msat;
 
+        if graph.get_node(&channel.source).is_none() {
+            graph.add_node(Node::new(&channel.source));
+        }
+
         // Add channel to the graph
         let edge = Channel::new(
             &channel.short_channel_id,
