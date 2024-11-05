@@ -31,7 +31,7 @@ impl CLNNetworkGraph {
     }
 
     /// Adds a node to the network graph.
-    pub fn add_node(&mut self, node: Node) {
+    fn add_node(&mut self, node: Node) {
         self.nodes.insert(node.id.clone(), node);
     }
 
@@ -39,10 +39,21 @@ impl CLNNetworkGraph {
     pub fn add_channel(&mut self, channel: Channel) {
         self.channels
             .insert(channel.short_channel_id.clone(), channel.clone());
-        self.nodes
-            .get_mut(&channel.node1)
-            .unwrap()
-            .add_channel(&channel);
+        if let Some(node1) = self.nodes.get_mut(&channel.node1) {
+            node1.add_channel(&channel);
+        } else {
+            let mut new_node = Node::new(&channel.node1);
+            new_node.add_channel(&channel);
+            self.add_node(new_node);
+        }
+
+        if let Some(node2) = self.nodes.get_mut(&channel.node2) {
+            node2.add_channel(&channel);
+        } else {
+            let mut new_node = Node::new(&channel.node2);
+            new_node.add_channel(&channel);
+            self.add_node(new_node);
+        }
     }
 }
 
