@@ -44,10 +44,6 @@ impl Strategy for Direct {
         Ok(false)
     }
 
-    fn set_network(&mut self, _network: &str) -> anyhow::Result<()> {
-        Ok(())
-    }
-
     /// Routes the payment directly from the source to the destination node.
     ///
     /// This method constructs a route with a single hop if a direct connection

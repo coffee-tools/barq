@@ -13,7 +13,6 @@ use lampo_common::ldk::routing::router::{find_route, PaymentParameters, Route, R
 use lampo_common::ldk::routing::scoring::{
     ProbabilisticScorer, ProbabilisticScoringDecayParameters, ProbabilisticScoringFeeParameters,
 };
-use lampo_common::ldk::util::logger::Logger;
 use lampo_common::ldk::util::ser::Readable;
 use lampo_common::utils::logger::LampoLogger;
 use lightning_rapid_gossip_sync::RapidGossipSync;
@@ -22,45 +21,26 @@ use crate::graph::NetworkGraph;
 use crate::strategy::{RouteHop, RouteInput, RouteOutput, Strategy};
 
 /// A routing strategy that uses the LDK crates to find the best route.
-pub struct LDKRoutingStrategy<L>
-where
-    L: Deref + Clone,
-    L::Target: Logger,
-{
-    logger: L,
-    network: Option<Network>,
+pub struct LDKRoutingStrategy {
+    logger: Arc<LampoLogger>,
+    network: Network,
+    root_path: String,
 }
 
-impl Default for LDKRoutingStrategy<Arc<LampoLogger>> {
-    fn default() -> Self {
+impl LDKRoutingStrategy {
+    pub fn new(network: Network, root_path: String) -> Self {
         Self {
             logger: Arc::new(LampoLogger::new()),
-            network: None,
-        }
-    }
-}
-
-impl<L> LDKRoutingStrategy<L>
-where
-    L: Deref + Clone,
-    L::Target: Logger,
-{
-    pub fn new(logger: L) -> Self {
-        Self {
-            logger,
-            network: None,
+            network,
+            root_path,
         }
     }
 
     fn convert_to_ldk_network_graph(
         &self,
         graph: &dyn NetworkGraph,
-    ) -> anyhow::Result<LdkNetworkGraph<L>> {
-        let ldkgraph = LdkNetworkGraph::new(
-            self.network
-                .ok_or(anyhow::anyhow!("Network not specified, please set it."))?,
-            self.logger.clone(),
-        );
+    ) -> anyhow::Result<LdkNetworkGraph<Arc<LampoLogger>>> {
+        let ldkgraph = LdkNetworkGraph::new(self.network.clone(), self.logger.clone());
 
         for channel in graph.get_channels() {
             // FIXME: we need to set the annouce message insie the channel struct
@@ -112,7 +92,10 @@ where
         }
     }
 
-    fn rapid_gossip_sync_network(&self, network: Network) -> Result<LdkNetworkGraph<L>> {
+    fn rapid_gossip_sync_network(
+        &self,
+        network: Network,
+    ) -> Result<LdkNetworkGraph<Arc<LampoLogger>>> {
         let graph = LdkNetworkGraph::new(network, self.logger.clone());
         let rapid_sync = RapidGossipSync::new(&graph, self.logger.clone());
 
@@ -141,11 +124,7 @@ where
     }
 }
 
-impl<L> Strategy for LDKRoutingStrategy<L>
-where
-    L: Deref + Clone,
-    L::Target: Logger,
-{
+impl Strategy for LDKRoutingStrategy {
     /// Determines if the LDK routing strategy can be applied to the given
     /// input.
     ///
@@ -160,11 +139,6 @@ where
             "The network graph does not have peer-to-peer information required for LDK routing"
         );
         Ok(false)
-    }
-
-    fn set_network(&mut self, network: &str) -> anyhow::Result<()> {
-        self.network = Some(Network::from_str(network)?);
-        Ok(())
     }
 
     fn route(&self, input: &RouteInput) -> Result<RouteOutput> {
@@ -207,17 +181,12 @@ where
 mod tests {
 
     use super::*;
-    use lampo_common::ldk::util::logger::Record;
-
-    struct DummyLogger {}
-    impl Logger for DummyLogger {
-        fn log(&self, _: Record) {}
-    }
+    use lampo_common::ldk::util::logger::{Logger, Record};
 
     #[test]
     fn test_rapid_gossip_sync_network_sanity() {
-        let strategy = LDKRoutingStrategy::new(Arc::new(DummyLogger {}));
         let network = Network::Bitcoin;
+        let strategy = LDKRoutingStrategy::new(network.clone(), "/tmp".to_string());
         let result = strategy.rapid_gossip_sync_network(network);
 
         assert!(
@@ -229,8 +198,8 @@ mod tests {
 
     #[test]
     fn test_rapid_gossip_sync_network_testnet() {
-        let strategy = LDKRoutingStrategy::new(Arc::new(DummyLogger {}));
         let network = Network::Testnet;
+        let strategy = LDKRoutingStrategy::new(network.clone(), "/tmp".to_string());
         let result = strategy.rapid_gossip_sync_network(network);
 
         assert!(
@@ -242,8 +211,8 @@ mod tests {
 
     #[test]
     fn test_rapid_gossip_sync_network_not_empty() {
-        let strategy = LDKRoutingStrategy::new(Arc::new(DummyLogger {}));
-        let network = Network::Bitcoin;
+        let network = Network::Testnet;
+        let strategy = LDKRoutingStrategy::new(network.clone(), "/tmp".to_string());
         let graph = strategy.rapid_gossip_sync_network(network).unwrap();
 
         let read_only_graph = graph.read_only();

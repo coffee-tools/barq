@@ -1,4 +1,3 @@
-use clightningrpc_gossip_map::bolt::bolt7::ChannelAnnouncement;
 use clightningrpc_gossip_map::core::ToWire;
 use clightningrpc_gossip_map::gossip_types::GossipChannel;
 use serde::{Deserialize, Serialize};

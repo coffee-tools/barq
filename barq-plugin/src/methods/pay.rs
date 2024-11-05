@@ -1,5 +1,7 @@
 use std::str::FromStr;
 
+use barq_common::algorithms::direct::Direct;
+use barq_common::algorithms::probabilistic::LDKRoutingStrategy;
 use serde::{Deserialize, Serialize};
 use serde_json as json;
 
@@ -8,7 +10,7 @@ use clightningrpc_plugin::errors::PluginError;
 use clightningrpc_plugin::plugin::Plugin;
 
 use barq_common::graph::NetworkGraph;
-use barq_common::strategy::{RouteInput, Router, StrategyKind};
+use barq_common::strategy::{RouteInput, Strategy, StrategyKind};
 use barq_common::Network;
 
 use crate::methods::graph::cln::build_cln_network_graph;
@@ -109,9 +111,6 @@ pub fn barq_pay(
     let request: BarqPayRequest = json::from_value(request).map_err(|err| error!("{err}"))?;
 
     let state = &plugin.state;
-    // SAFETY: the plugin set always the network, otherwise is a bug
-    let router = Router::new(state.network.as_ref().unwrap());
-
     // FIXME: the decodepay is deprecated, we should use `decode`.
     let b11: Bolt11 = state
         .call(
@@ -154,13 +153,13 @@ pub fn barq_pay(
         ));
     }
 
+    let strategy = request.strategy().map_err(|e| error!("{e}"))?;
     // If the probabilistic strategy is selected, build the network graph from the
     // gossip map. Else, build the network graph from the plugin state
-    let network_graph: Box<dyn NetworkGraph> =
-        match request.strategy().map_err(|e| error!("{e}"))? {
-            StrategyKind::Direct => Box::new(build_cln_network_graph(state)?),
-            StrategyKind::Probabilistic => Box::new(build_p2p_network_graph(state)?),
-        };
+    let network_graph: Box<dyn NetworkGraph> = match strategy {
+        StrategyKind::Direct => Box::new(build_cln_network_graph(state)?),
+        StrategyKind::Probabilistic => Box::new(build_p2p_network_graph(state)?),
+    };
 
     let input = RouteInput {
         src_pubkey: node_info.id.clone(),
@@ -169,47 +168,49 @@ pub fn barq_pay(
         amount_msat: amount,
         cltv: b11.min_final_cltv_expiry,
         graph: network_graph,
-        strategy: request.strategy().map_err(|e| error!("{e}"))?,
         use_rapid_gossip_sync: request.use_rapid_gossip_sync,
     };
 
-    // Execute the routing process
-    let router_output = router.execute(&input);
-    let response = match router_output {
-        Ok(output) => {
-            if output.path.is_empty() {
-                return Err(error!("No route found between us and `{}`", b11.payee));
-            }
-            log::info!("path selected by the strategy is: `{:?}`", output.path);
-            let sendpay_request: json::Value = serde_json::json!({
-                "route": output.path,
-                "payment_hash": b11.payment_hash,
-                "payment_secret": b11.payment_secret,
-                "partid": 0,
-            });
-
-            let sendpay_response: CLNSendpayResponse = state
-                .call("sendpay", sendpay_request)
-                .map_err(|err| PluginError::new(err.code, &err.message, err.data))?;
-
-            let waitsendpay_request: json::Value = serde_json::json!({
-                "payment_hash": sendpay_response.payment_hash.clone(),
-                "partid": 0,
-            });
-
-            let waitsendpay_response: CLNSendpayResponse = state
-                .call("waitsendpay", waitsendpay_request)
-                .map_err(|err| PluginError::new(err.code, &err.message, err.data))?;
-
-            // Construct the response from the output
-            BarqPayResponse {
-                status: "success".to_string(),
-                message: None,
-                response: Some(waitsendpay_response),
-            }
-        }
-        Err(err) => return Err(error!("{err}")),
+    let strategy: Box<dyn Strategy> = match strategy {
+        StrategyKind::Direct => Box::new(Direct::new()),
+        StrategyKind::Probabilistic => Box::new(LDKRoutingStrategy::new(
+            node_network,
+            plugin.state.cln_rpc_path.clone().unwrap(),
+        )),
     };
 
+    // Execute the routing process
+    let output = strategy.route(&input).map_err(|err| error!("{err}"))?;
+    if output.path.is_empty() {
+        return Err(error!("No route found between us and `{}`", b11.payee));
+    }
+    log::info!("path selected by the strategy is: `{:?}`", output.path);
+    let sendpay_request: json::Value = serde_json::json!({
+        "route": output.path,
+        "payment_hash": b11.payment_hash,
+        "payment_secret": b11.payment_secret,
+        "partid": 0,
+    });
+
+    let sendpay_response: CLNSendpayResponse = state
+        .call("sendpay", sendpay_request)
+        .map_err(|err| PluginError::new(err.code, &err.message, err.data))?;
+
+    let waitsendpay_request: json::Value = serde_json::json!({
+        "payment_hash": sendpay_response.payment_hash.clone(),
+        "partid": 0,
+    });
+
+    let waitsendpay_response: CLNSendpayResponse =
+        state
+            .call("waitsendpay", waitsendpay_request)
+            .map_err(|err| PluginError::new(err.code, &err.message, err.data))?;
+
+    // Construct the response from the output
+    let response = BarqPayResponse {
+        status: "success".to_string(),
+        message: None,
+        response: Some(waitsendpay_response),
+    };
     Ok(json::to_value(response)?)
 }

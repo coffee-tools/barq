@@ -8,12 +8,8 @@ use clightningrpc_plugin::error;
 use clightningrpc_plugin::errors::PluginError;
 use clightningrpc_plugin::plugin::Plugin;
 
-use barq_common::graph::NetworkGraph;
-use barq_common::strategy::{RouteHop, RouteInput, Router, StrategyKind};
+use barq_common::strategy::{RouteHop, StrategyKind};
 
-use crate::methods::graph::cln::build_cln_network_graph;
-use crate::methods::graph::p2p::build_p2p_network_graph;
-use crate::methods::pay::NodeInfo;
 use crate::plugin::State;
 
 /// Request payload for Barq route info RPC method
