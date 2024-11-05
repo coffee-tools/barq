@@ -85,10 +85,7 @@ impl Strategy for Direct {
             input.dest_pubkey.clone(),
             channel.short_channel_id.clone(),
             input.cltv as u32,
-            // FIXME: Double check for this?
-            input.amount_msat
-                + channel.base_fee_millisatoshi
-                + (channel.fee_per_millionth * input.amount_msat),
+            input.amount_msat,
         );
 
         Ok(RouteOutput { path: vec![hop] })
