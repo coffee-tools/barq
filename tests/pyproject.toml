@@ -10,6 +10,7 @@ python = ">=3.8,<4.0"
 pytest = "*"
 pyln-client = "^24.5"
 pyln-testing = "^24.5"
+websockets = "*"
 
 [build-system]
 requires = ["poetry-core"]
