@@ -62,7 +62,7 @@
             export RUST_BACKTRACE=1
             export PYTHON_KEYRING_BACKEND=keyring.backends.null.Keyring
 
-            cd tests/ && poetry config virtualenvs.create false && poetry env use $(which python) && poetry lock --no-update && poetry install -vvv && cd ..
+            cd tests/ && poetry env use $(which python) && poetry lock --no-update && poetry install -vvv && cd ..
           '';
         };
       }
