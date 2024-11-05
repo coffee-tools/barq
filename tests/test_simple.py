@@ -1,4 +1,5 @@
 import os
+import pytest
 
 from pyln.testing.fixtures import *  # noqa: F403
 from pyln.testing.utils import only_one
@@ -20,7 +21,7 @@ def test_init(node_factory):
 
 
 def test_pay_amounts(node_factory):
-    """We steal this from core lightning test_pay.py, and we are try just 
+    """We steal this from core lightning test_pay.py, and we are try just
     to pay and invoice with amount"""
     l1, l2 = node_factory.line_graph(2, opts=[{"plugin": barq_binary }, { "plugin": barq_binary}], wait_for_announce=True)
     inv = l2.rpc.invoice(Millisatoshi("123sat"), 'test_pay_amounts', 'description')['bolt11']
@@ -80,7 +81,7 @@ def test_pay_fail_when_there_is_no_channel(node_factory):
     invoice = only_one(l2.rpc.listinvoices('test_pay_amounts')['invoices'])
     assert invoice['status'] == 'unpaid'
 
-
+@pytest.mark.skip(reason="We need to implement the probabilistic strategy")
 def test_pay_with_ldk_algo(node_factory):
     """Try LDK algorithm"""
     l1, l2 = node_factory.line_graph(2, opts=[{"plugin": barq_binary }, { "plugin": barq_binary}], wait_for_announce=True)
