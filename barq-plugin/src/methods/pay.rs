@@ -78,18 +78,17 @@ pub struct BarqPayResponse {
     pub response: Option<CLNSendpayResponse>,
 }
 
-/// Response from `decodepay` RPC command of Core Lightning
-///
-/// See: https://docs.corelightning.org/reference/lightning-decodepay#return-value
+/// Decode response for Bolt11/Bolt12 invoices
 #[derive(Deserialize, Debug)]
-struct Bolt11 {
+struct DecodedInvoice {
     /// The BIP173 name for the currency
-    currency: String,
-    payee: String,
+    currency: Option<String>,
+    payee: Option<String>,
     amount_msat: Option<u64>,
     payment_hash: String,
-    min_final_cltv_expiry: u64,
+    min_final_cltv_expiry: Option<u64>,
     payment_secret: Option<String>,
+    type_: Option<String>, // Indicates if it's Bolt11 or Bolt12
 }
 
 /// Response from `getinfo` RPC command of Core Lightning
@@ -111,31 +110,23 @@ pub fn barq_pay(
     let request: BarqPayRequest = json::from_value(request).map_err(|err| error!("{err}"))?;
 
     let state = &plugin.state;
-    // FIXME: the decodepay is deprecated, we should use `decode`.
-    let b11: Bolt11 = state
+
+    // Decode the invoice using the `decode` command
+    let decoded: DecodedInvoice = state
         .call(
-            "decodepay",
+            "decode",
             serde_json::json!({
-                "bolt11": request.bolt11_invoice
+                "string": request.bolt11_invoice
             }),
         )
         .map_err(|err| PluginError::new(err.code, &err.message, err.data))?;
 
-    // Get the network of the invoice
-    // See: https://github.com/lightning/bolts/blob/master/11-payment-encoding.md#human-readable-part
-    let invoice_network = match b11.currency.as_str() {
-        "bc" => Network::Bitcoin,
-        "tb" => Network::Testnet,
-        "tbs" => Network::Signet,
-        "bcrt" => Network::Regtest,
-        _ => return Err(error!("Unknown currency: {}", b11.currency)),
-    };
+    let invoice_type = decoded.type_.as_deref().unwrap_or("unknown");
+    log::info!("Invoice type detected: {}", invoice_type);
 
-    let node_info: NodeInfo = state
-        .call("getinfo", serde_json::json!({}))
-        .map_err(|err| PluginError::new(err.code, &err.message, err.data))?;
-
-    let amount = match (b11.amount_msat, request.amount_msat) {
+    let currency = decoded.currency.ok_or_else(|| error!("Missing currency field"))?;
+    let payee = decoded.payee.ok_or_else(|| error!("Missing payee field"))?;
+    let amount = match (decoded.amount_msat, request.amount_msat) {
         (Some(_), Some(_)) => {
             return Err(error!("barqpay execution failed: amount_msat not required"))
         }
@@ -143,8 +134,18 @@ pub fn barq_pay(
         (None, None) => return Err(error!("barqpay execution failed: amount_msat not required")),
     };
 
-    let node_network = node_info.network;
-    let node_network = Network::from_str(&node_network).map_err(|e| error!("{e}"))?;
+    let invoice_network = match currency.as_str() {
+        "bc" => Network::Bitcoin,
+        "tb" => Network::Testnet,
+        "tbs" => Network::Signet,
+        "bcrt" => Network::Regtest,
+        _ => return Err(error!("Unknown currency: {}", currency)),
+    };
+
+    let node_info: NodeInfo = state
+        .call("getinfo", serde_json::json!({}))
+        .map_err(|err| PluginError::new(err.code, &err.message, err.data))?;
+    let node_network = Network::from_str(&node_info.network).map_err(|e| error!("{e}"))?;
 
     if invoice_network != node_network {
         return Err(error!(
@@ -163,10 +164,10 @@ pub fn barq_pay(
 
     let input = RouteInput {
         src_pubkey: node_info.id.clone(),
-        dest_pubkey: b11.payee.clone(),
+        dest_pubkey: payee,
         network: node_network,
         amount_msat: amount,
-        cltv: b11.min_final_cltv_expiry,
+        cltv: decoded.min_final_cltv_expiry.unwrap_or_default(),
         graph: network_graph,
         use_rapid_gossip_sync: request.use_rapid_gossip_sync,
     };
@@ -182,13 +183,15 @@ pub fn barq_pay(
     // Execute the routing process
     let output = strategy.route(&input).map_err(|err| error!("{err}"))?;
     if output.path.is_empty() {
-        return Err(error!("No route found between us and `{}`", b11.payee));
+        return Err(error!("No route found between us and `{}`", payee));
     }
-    log::info!("path selected by the strategy is: `{:?}`", output.path);
+
+    log::info!("Path selected by the strategy: {:?}", output.path);
+
     let sendpay_request: json::Value = serde_json::json!({
         "route": output.path,
-        "payment_hash": b11.payment_hash,
-        "payment_secret": b11.payment_secret,
+        "payment_hash": decoded.payment_hash,
+        "payment_secret": decoded.payment_secret,
         "partid": 0,
     });
 
@@ -212,5 +215,6 @@ pub fn barq_pay(
         message: None,
         response: Some(waitsendpay_response),
     };
+
     Ok(json::to_value(response)?)
 }
