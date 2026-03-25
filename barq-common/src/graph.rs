@@ -77,19 +77,25 @@ impl Channel {
 
 impl From<GossipChannel> for Channel {
     fn from(value: GossipChannel) -> Self {
-        // FIXME: we should encode the channel id
+        let capacity = value.satoshi.unwrap_or(0);
         let mut val = Self::new(
             &hex::encode(value.inner.short_channel_id),
             &hex::encode(value.inner.node_id_1),
             &hex::encode(value.inner.node_id_2),
-            value.satoshi.unwrap(),
+            capacity,
             0,
             0,
             0,
         );
         let mut buffer = Vec::new();
-        value.inner.to_wire(&mut buffer).unwrap();
-        val.channel_announcement = Some(buffer);
+        if let Ok(()) = value.inner.to_wire(&mut buffer) {
+            val.channel_announcement = Some(buffer);
+        } else {
+            log::warn!(
+                "Failed to serialize channel announcement for channel {}",
+                hex::encode(value.inner.short_channel_id)
+            );
+        }
         val
     }
 }

@@ -137,10 +137,16 @@ pub fn barq_pay(
 
     let amount = match (b11.amount_msat, request.amount_msat) {
         (Some(_), Some(_)) => {
-            return Err(error!("barqpay execution failed: amount_msat not required"))
+            return Err(error!(
+                "barqpay execution failed: amount_msat specified in both invoice and request, provide only one"
+            ))
         }
         (Some(amount), None) | (None, Some(amount)) => amount,
-        (None, None) => return Err(error!("barqpay execution failed: amount_msat not required")),
+        (None, None) => {
+            return Err(error!(
+                "barqpay execution failed: amount_msat is required but missing from both invoice and request"
+            ))
+        }
     };
 
     let node_network = node_info.network;
@@ -175,7 +181,11 @@ pub fn barq_pay(
         StrategyKind::Direct => Box::new(Direct::new()),
         StrategyKind::Probabilistic => Box::new(LDKRoutingStrategy::new(
             node_network,
-            plugin.state.cln_rpc_path.clone().unwrap(),
+            plugin
+                .state
+                .cln_rpc_path
+                .clone()
+                .ok_or_else(|| error!("CLN RPC path not initialized"))?,
         )),
     };
 

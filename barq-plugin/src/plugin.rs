@@ -1,6 +1,6 @@
 //! Barq Plugin implementation
 
-use clightningrpc_common::errors::{Error, RpcError};
+use clightningrpc_common::errors::RpcError;
 use serde::de::DeserializeOwned;
 use serde::Serialize;
 use serde_json::Value;
@@ -84,7 +84,10 @@ pub fn build_plugin() -> anyhow::Result<Plugin<State>> {
 
 /// This method is called when the plugin is initialized
 fn on_init(plugin: &mut Plugin<State>) -> Value {
-    let config = plugin.configuration.clone().unwrap();
+    let Some(config) = plugin.configuration.clone() else {
+        log::error!("Plugin configuration is missing during init");
+        return serde_json::json!({"disable": "Plugin configuration missing"});
+    };
     let rpc_file = format!("{}/{}", config.lightning_dir, config.rpc_file);
     plugin.state.network = Some(config.network);
     plugin.state.cln_rpc_path = Some(rpc_file);

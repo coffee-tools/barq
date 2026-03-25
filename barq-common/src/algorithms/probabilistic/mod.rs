@@ -1,6 +1,7 @@
 use core::ops::Deref;
 use std::str::FromStr;
 use std::sync::Arc;
+use std::time::SystemTime;
 
 use anyhow::Result;
 use reqwest::blocking;
@@ -40,7 +41,7 @@ impl LDKRoutingStrategy {
         &self,
         graph: &dyn NetworkGraph,
     ) -> anyhow::Result<LdkNetworkGraph<Arc<LampoLogger>>> {
-        let ldkgraph = LdkNetworkGraph::new(self.network.clone(), self.logger.clone());
+        let ldkgraph = LdkNetworkGraph::new(self.network, self.logger.clone());
 
         for channel in graph.get_channels() {
             // FIXME: we need to set the annouce message insie the channel struct
@@ -56,40 +57,55 @@ impl LDKRoutingStrategy {
         Ok(ldkgraph)
     }
 
-    fn construct_route_params(input: &RouteInput) -> RouteParameters {
-        // SAFETY: safe to unwrap because it should be a valid pub key
-        let payment_params = PaymentParameters::from_node_id(
-            PublicKey::from_str(&input.dest_pubkey).unwrap(),
-            input.cltv as u32,
-        );
-        RouteParameters::from_payment_params_and_value(payment_params, input.amount_msat)
+    fn construct_route_params(input: &RouteInput) -> anyhow::Result<RouteParameters> {
+        let dest_pubkey = PublicKey::from_str(&input.dest_pubkey).map_err(|e| {
+            anyhow::anyhow!("Invalid destination pubkey '{}': {}", input.dest_pubkey, e)
+        })?;
+        let payment_params = PaymentParameters::from_node_id(dest_pubkey, input.cltv as u32);
+        Ok(RouteParameters::from_payment_params_and_value(
+            payment_params,
+            input.amount_msat,
+        ))
     }
 
-    fn convert_route_to_output(route: Route) -> RouteOutput {
-        let path = route.paths.first().expect("No LDK path available");
-        let mut amt_to_forward = 0;
-        let mut delay = 0;
+    fn convert_route_to_output(route: Route) -> anyhow::Result<RouteOutput> {
+        let path = route
+            .paths
+            .first()
+            .ok_or_else(|| anyhow::anyhow!("No LDK path available in route result"))?;
 
-        let output_path: Vec<RouteHop> = path
-            .hops
-            .iter()
-            .rev()
-            .map(|hop| {
-                amt_to_forward += hop.fee_msat;
-                delay += hop.cltv_expiry_delta;
+        let hops = &path.hops;
+        let num_hops = hops.len();
+        let mut output_path = Vec::with_capacity(num_hops);
 
-                RouteHop::new(
-                    hop.pubkey.to_string(),
-                    hop.short_channel_id.to_string(),
-                    delay,
-                    amt_to_forward,
-                )
-            })
-            .collect();
+        // Build amounts and delays from destination back to source.
+        // The last hop forwards the final payment amount (its fee_msat IS the amount).
+        // Each preceding hop forwards: next_hop_amount + next_hop_fee.
+        // CLTV delay accumulates from the destination backwards.
+        let mut amounts: Vec<u64> = vec![0; num_hops];
+        let mut delays: Vec<u32> = vec![0; num_hops];
 
-        RouteOutput {
-            path: output_path.into_iter().rev().collect(),
+        // Last hop: amount to forward is the fee_msat field (which for the
+        // final hop equals the payment amount), delay is the final CLTV.
+        amounts[num_hops - 1] = hops[num_hops - 1].fee_msat;
+        delays[num_hops - 1] = hops[num_hops - 1].cltv_expiry_delta;
+
+        // Walk backwards from second-to-last hop
+        for i in (0..num_hops - 1).rev() {
+            amounts[i] = amounts[i + 1] + hops[i].fee_msat;
+            delays[i] = delays[i + 1] + hops[i].cltv_expiry_delta;
         }
+
+        for (i, hop) in hops.iter().enumerate() {
+            output_path.push(RouteHop::new(
+                hop.pubkey.to_string(),
+                hop.short_channel_id.to_string(),
+                delays[i],
+                amounts[i],
+            ));
+        }
+
+        Ok(RouteOutput { path: output_path })
     }
 
     fn rapid_gossip_sync_network(
@@ -144,7 +160,7 @@ impl Strategy for LDKRoutingStrategy {
     fn route(&self, input: &RouteInput) -> Result<RouteOutput> {
         let our_node_pubkey = PublicKey::from_str(&input.src_pubkey)
             .map_err(|_| anyhow::anyhow!("Failed to parse source pubkey"))?;
-        let route_params = Self::construct_route_params(input);
+        let route_params = Self::construct_route_params(input)?;
 
         let ldk_graph = if input.use_rapid_gossip_sync {
             self.rapid_gossip_sync_network(input.network)?
@@ -157,8 +173,23 @@ impl Strategy for LDKRoutingStrategy {
         let feeparams = ProbabilisticScoringFeeParameters::default();
         let scorer = ProbabilisticScorer::new(parms, &ldk_graph, self.logger.clone());
 
-        // FIXME: Implement the logic to generate random seed bytes
-        let random_seed_bytes = [0; 32];
+        // Use time-based entropy for route randomization.
+        // This prevents deterministic routing which could be exploited by
+        // an adversary to predict payment paths.
+        let seed_time = SystemTime::now()
+            .duration_since(SystemTime::UNIX_EPOCH)
+            .unwrap_or_default()
+            .as_nanos();
+        let mut random_seed_bytes = [0u8; 32];
+        let time_bytes = seed_time.to_le_bytes();
+        random_seed_bytes[..16].copy_from_slice(&time_bytes);
+        // Mix in the payment amount and source pubkey for additional entropy
+        let amt_bytes = input.amount_msat.to_le_bytes();
+        random_seed_bytes[16..24].copy_from_slice(&amt_bytes);
+        let src_bytes = input.src_pubkey.as_bytes();
+        for (i, byte) in src_bytes.iter().take(8).enumerate() {
+            random_seed_bytes[24 + i] = *byte;
+        }
 
         let route = find_route(
             &our_node_pubkey,
@@ -173,7 +204,7 @@ impl Strategy for LDKRoutingStrategy {
         // FIXME: we are losing context, we should return an better error for the plugin
         .map_err(|e| anyhow::anyhow!("Failed to find route: {:?}", e))?;
 
-        Ok(Self::convert_route_to_output(route))
+        Self::convert_route_to_output(route)
     }
 }
 
@@ -181,12 +212,11 @@ impl Strategy for LDKRoutingStrategy {
 mod tests {
 
     use super::*;
-    use lampo_common::ldk::util::logger::{Logger, Record};
 
     #[test]
     fn test_rapid_gossip_sync_network_sanity() {
         let network = Network::Bitcoin;
-        let strategy = LDKRoutingStrategy::new(network.clone(), "/tmp".to_string());
+        let strategy = LDKRoutingStrategy::new(network, "/tmp".to_string());
         let result = strategy.rapid_gossip_sync_network(network);
 
         assert!(
@@ -199,7 +229,7 @@ mod tests {
     #[test]
     fn test_rapid_gossip_sync_network_testnet() {
         let network = Network::Testnet;
-        let strategy = LDKRoutingStrategy::new(network.clone(), "/tmp".to_string());
+        let strategy = LDKRoutingStrategy::new(network, "/tmp".to_string());
         let result = strategy.rapid_gossip_sync_network(network);
 
         assert!(
@@ -212,7 +242,7 @@ mod tests {
     #[test]
     fn test_rapid_gossip_sync_network_not_empty() {
         let network = Network::Testnet;
-        let strategy = LDKRoutingStrategy::new(network.clone(), "/tmp".to_string());
+        let strategy = LDKRoutingStrategy::new(network, "/tmp".to_string());
         let graph = strategy.rapid_gossip_sync_network(network).unwrap();
 
         let read_only_graph = graph.read_only();

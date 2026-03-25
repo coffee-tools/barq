@@ -7,8 +7,9 @@ use lampo_common::conf::Network;
 
 use crate::graph::NetworkGraph;
 
-#[derive(Debug, PartialEq, Eq, Clone)]
+#[derive(Debug, Default, PartialEq, Eq, Clone)]
 pub enum StrategyKind {
+    #[default]
     Direct,
     Probabilistic,
 }
@@ -22,12 +23,6 @@ impl FromStr for StrategyKind {
             "probabilistic" => Ok(Self::Probabilistic),
             _ => anyhow::bail!("Strategy `{s}` not found"),
         }
-    }
-}
-
-impl Default for StrategyKind {
-    fn default() -> Self {
-        Self::Direct
     }
 }
 
