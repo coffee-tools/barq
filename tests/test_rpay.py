@@ -94,3 +94,70 @@ def test_rpay_uses_pay_error_codes(node_factory):
         with pytest.raises(RpcError) as err:
             l1.rpc.call("rpay", bad)
         assert err.value.error["code"] == -32602
+
+
+def test_rpay_fee_limits_and_exclusions(node_factory):
+    """pay's fee limit (maxfeepercent, exemptfee, maxfee) and `exclude`."""
+    l1, l2, l3 = node_factory.line_graph(
+        3,
+        opts=[{"plugin": barq_binary}, {"fee-base": 5001, "fee-per-satoshi": 0}, {}],
+        wait_for_announce=True,
+    )
+    # 5001msat of fees for 1msat: over 0.5% and over the 5000msat exemption.
+    inv = l3.rpc.invoice(1, "tiny", "tiny")["bolt11"]
+    with pytest.raises(RpcError, match="Could not find route without excessive cost") as err:
+        l1.rpc.call("rpay", {"bolt11": inv})
+    assert err.value.error["code"] == 206
+    assert l1.rpc.call("rpay", {"bolt11": inv, "exemptfee": 5001})["status"] == "complete"
+
+    inv = l3.rpc.invoice(10_000, "maxfee", "maxfee")["bolt11"]
+    with pytest.raises(RpcError, match="excessive cost"):
+        l1.rpc.call("rpay", {"bolt11": inv, "maxfee": 5000})
+    with pytest.raises(RpcError, match="cannot specify maxfeepercent"):
+        l1.rpc.call("rpay", {"bolt11": inv, "maxfee": 6000, "maxfeepercent": 1})
+
+    with pytest.raises(RpcError, match="Payer is manually excluded"):
+        l1.rpc.call("rpay", {"bolt11": inv, "exclude": [l1.info["id"]]})
+    with pytest.raises(RpcError, match="Payee is manually excluded"):
+        l1.rpc.call("rpay", {"bolt11": inv, "exclude": [l3.info["id"]]})
+    scid23 = l2.get_channel_scid(l3)
+    for excluded in (l2.info["id"], scid23, f"{scid23}/0"):
+        with pytest.raises(RpcError, match="is not reachable directly") as err:
+            l1.rpc.call("rpay", {"bolt11": inv, "exclude": [excluded], "maxfee": 10_000})
+        assert err.value.error["code"] == 205
+    assert l1.rpc.call("rpay", {"bolt11": inv, "maxfee": 5001})["status"] == "complete"
+
+
+def test_rpay_like_pay_on_repeats_and_self(node_factory):
+    """An invoice already paid answers with that payment; our own invoices
+    and offers are paid locally; partial_msat and description are checked."""
+    l1, l2, l3 = network(node_factory)
+
+    inv = l3.rpc.invoice(10_000, "twice", "twice")["bolt11"]
+    first = l1.rpc.call("rpay", {"bolt11": inv})
+    again = l1.rpc.call("rpay", {"bolt11": inv})
+    assert again["payment_preimage"] == first["payment_preimage"]
+    assert len(l1.rpc.listsendpays(inv)["payments"]) == 1
+    # Every attempt is a part of the payment's group, like pay.
+    part = only_one(l1.rpc.listsendpays(inv)["payments"])
+    assert (part["groupid"], part["partid"]) == (1, 1)
+
+    # BOLT11 to ourselves.
+    own = l1.rpc.invoice(5_000, "self", "self")["bolt11"]
+    assert l1.rpc.call("rpay", {"bolt11": own})["status"] == "complete"
+    assert only_one(l1.rpc.listinvoices("self")["invoices"])["status"] == "paid"
+    # BOLT12 to ourselves, through our own blinded path.
+    offer = l1.rpc.offer("3000msat", "self offer")["bolt12"]
+    b12 = l1.rpc.fetchinvoice(offer=offer)["invoice"]
+    assert l1.rpc.call("rpay", {"bolt11": b12})["status"] == "complete"
+
+    inv = l3.rpc.invoice(10_000, "partial", "partial")["bolt11"]
+    with pytest.raises(RpcError, match="partial_msat must be less or equal"):
+        l1.rpc.call("rpay", {"bolt11": inv, "partial_msat": 10_001})
+
+    description = "a slice of watermelon"
+    inv = l3.rpc.invoice(1_000, "deschash", description, deschashonly=True)["bolt11"]
+    with pytest.raises(RpcError, match="does not match description"):
+        l1.rpc.call("rpay", {"bolt11": inv, "description": description[:-1]})
+    l1.rpc.call("rpay", {"bolt11": inv, "description": description})
+    assert only_one(l1.rpc.listpays(inv)["pays"])["description"] == description

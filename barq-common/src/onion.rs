@@ -6,7 +6,10 @@
 //! following BOLT4.
 use anyhow::Result;
 
-use lampo_common::ldk::routing::router::Path;
+use lampo_common::ldk::blinded_path::BlindedPath;
+use lampo_common::ldk::ln::features::{ChannelFeatures, NodeFeatures};
+use lampo_common::ldk::offers::invoice::BlindedPayInfo;
+use lampo_common::ldk::routing::router::{BlindedTail, Path, RouteHop};
 use lampo_common::ldk::util::ser::{BigSize, Writeable};
 use lampo_common::secp256k1::PublicKey;
 
@@ -203,6 +206,40 @@ pub fn build_onion_hops(
         first_hop_amount_msat: cur_value_msat,
         first_hop_cltv_expiry: cur_cltv,
     })
+}
+
+/// The [`Path`] to pay through a blinded path whose introduction node is
+/// our own node, which LDK refuses to route ("we are the introduction
+/// node"). It has one clear hop, our node, carrying the blinded path's
+/// aggregated fee and CLTV delta like the last clear hop of any LDK path
+/// to a blinded tail. [`build_onion_hops`] then encrypts the first layer to
+/// our real key, and Core Lightning's `injectpaymentonion` unwraps it as
+/// if a peer had sent it.
+pub fn path_from_introduction(
+    our_id: PublicKey,
+    payinfo: &BlindedPayInfo,
+    path: &BlindedPath,
+    amount_msat: u64,
+) -> Path {
+    let proportional = (amount_msat as u128 * payinfo.fee_proportional_millionths as u128)
+        .div_ceil(1_000_000) as u64;
+    Path {
+        hops: vec![RouteHop {
+            pubkey: our_id,
+            node_features: NodeFeatures::empty(),
+            short_channel_id: 0,
+            channel_features: ChannelFeatures::empty(),
+            fee_msat: payinfo.fee_base_msat as u64 + proportional,
+            cltv_expiry_delta: payinfo.cltv_expiry_delta as u32,
+            maybe_announced_channel: false,
+        }],
+        blinded_tail: Some(BlindedTail {
+            hops: path.blinded_hops.clone(),
+            blinding_point: path.blinding_point,
+            excess_final_cltv_expiry_delta: 0,
+            final_value_msat: amount_msat,
+        }),
+    }
 }
 
 /// Where a payment failed, reconstructed from Core Lightning's
@@ -511,5 +548,48 @@ mod tests {
         assert!(hidden.in_blinded_path);
 
         assert_eq!(locate_failure(&path, 4), None);
+    }
+
+    #[test]
+    fn path_from_our_introduction_node() {
+        use lampo_common::ldk::blinded_path::IntroductionNode;
+        use lampo_common::ldk::ln::features::BlindedHopFeatures;
+
+        let payinfo = BlindedPayInfo {
+            fee_base_msat: 1000,
+            fee_proportional_millionths: 100,
+            htlc_minimum_msat: 1,
+            htlc_maximum_msat: u64::MAX,
+            cltv_expiry_delta: 40,
+            features: BlindedHopFeatures::empty(),
+        };
+        let blinded = BlindedPath {
+            introduction_node: IntroductionNode::NodeId(pk(1)),
+            blinding_point: pk(3),
+            blinded_hops: vec![
+                BlindedHop {
+                    blinded_node_id: pk(2),
+                    encrypted_payload: vec![0xde, 0xad],
+                },
+                BlindedHop {
+                    blinded_node_id: pk(3),
+                    encrypted_payload: vec![0xbe, 0xef],
+                },
+            ],
+        };
+        // 1000 base + ceil(15_000 * 100 / 10^6) = 1000 + 2.
+        let path = path_from_introduction(pk(1), &payinfo, &blinded, 15_000);
+        assert_eq!(path.hops.len(), 1);
+        assert_eq!(path.hops[0].fee_msat, 1002);
+
+        let onion = build_onion_hops(&path, 15_000, &RecipientFields::default(), 100).unwrap();
+        // What our node "receives": the amount plus the path's fee, with a
+        // CLTV covering the path.
+        assert_eq!(onion.first_hop_amount_msat, 16_002);
+        assert_eq!(onion.first_hop_cltv_expiry, 140);
+        // We are the first layer, under our real key; then the blinded hops.
+        assert_eq!(onion.hops.len(), 2);
+        assert_eq!(onion.hops[0].pubkey, pk(1));
+        assert_eq!(onion.hops[1].pubkey, pk(3));
     }
 }

@@ -3,6 +3,7 @@
 //! sync) and the onion payload builder used to hand a route to Core
 //! Lightning.
 pub mod algorithms;
+pub mod failure;
 pub mod gossip_store;
 pub mod history;
 pub mod network;

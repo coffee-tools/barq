@@ -40,6 +40,7 @@ struct DecodeResponse {
     created_at: Option<u64>,
     expiry: Option<u64>,
     features: Option<String>,
+    description_hash: Option<String>,
     #[serde(default)]
     routes: Vec<Vec<RouteHintHopJson>>,
     // BOLT12
@@ -115,6 +116,8 @@ pub struct DecodedInvoice {
     pub expiry_time: Option<u64>,
     /// Network the invoice was issued for, when encoded in it.
     pub network: Option<Network>,
+    /// BOLT11 `h`: the invoice commits to a description it does not carry.
+    pub description_hash: Option<String>,
 }
 
 fn pubkey(s: &str, what: &str) -> Result<PublicKey, PluginError> {
@@ -223,6 +226,7 @@ fn bolt11(decoded: DecodeResponse) -> Result<DecodedInvoice, PluginError> {
         final_cltv_delta: decoded.min_final_cltv_expiry.unwrap_or(18),
         payment_secret,
         payment_metadata,
+        description_hash: decoded.description_hash.clone(),
         expiry_time: match (decoded.created_at, decoded.expiry) {
             (Some(created), Some(expiry)) => Some(created + expiry),
             _ => None,
@@ -315,6 +319,7 @@ fn bolt12(decoded: DecodeResponse) -> Result<DecodedInvoice, PluginError> {
         final_cltv_delta: 0,
         payment_secret: None,
         payment_metadata: None,
+        description_hash: None,
         expiry_time: match (decoded.invoice_created_at, decoded.invoice_relative_expiry) {
             (Some(created), Some(expiry)) => Some(created + expiry),
             (Some(created), None) => Some(created + 7200),

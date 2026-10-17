@@ -141,8 +141,24 @@ With `barq-override-pay=true`, barq takes over the `pay` command itself, so
 anything that calls `pay` (you, other plugins, scripts, test suites) pays
 with barq. The answer keeps `pay`'s format and error codes; barq's details
 (the `id`, the attempts) are in the error data, and every payment is in
-`barqinspect`. barq reads `bolt11`, `amount_msat` and `label`; `pay`'s
-other parameters are ignored.
+`barqinspect`. barq behaves like `pay` where it matters to callers:
+
+| `pay` parameter or behavior | barq |
+| --- | --- |
+| `bolt11` (or `invstring`), `amount_msat`, `label` | used |
+| `maxfeepercent` (0.5), `exemptfee` (5000msat), `maxfee` | routes over the limit are skipped; error 206 when none is left |
+| `exclude` | node ids and `scid[/direction]` are avoided; excluding the payer or payee is an error |
+| `partial_msat` | sends that part, with the invoice amount as the total |
+| `description` | must hash to the invoice's `description_hash`; shown by `listpays` |
+| `riskfactor`, `retry_for`, `maxdelay`, `localinvreqid` | accepted and ignored |
+| attempts | one `groupid`, `partid` 1, 2, ...; `parts` counts them |
+| invoice already paid | answers with that payment |
+| invoice expired | error 207 |
+| paying ourselves | BOLT11 with `sendpay`, BOLT12 through our own blinded path |
+
+barq sends every payment in one part (no multi-part payments). How close
+this is to `pay` is checked by running Core Lightning's own `pay` tests with
+barq serving `pay`: see `tests/cln/`.
 
 This uses an `rpc_command` hook filtered to `pay`, which needs Core
 Lightning v25.12 or later. On older versions barq does not register the
@@ -216,7 +232,25 @@ built by barq, Core Lightning cannot know the route, so barq fills in:
 - code `203` instead of `204` when the destination itself rejected a
   BOLT11 payment, so callers know a different route will not help.
 
-The failing channel is penalised in the LDK scorer, which is persisted.
+barq also learns from the failure, so a retry does not repeat it:
+
+- Forwarding errors with the `UPDATE` flag (`temporary_channel_failure`,
+  `fee_insufficient`, `incorrect_cltv_expiry`, `amount_below_minimum`,
+  `expiry_too_soon`, `channel_disabled`) carry the failing node's latest
+  `channel_update`. barq decodes it from the error's `raw_message`, applies
+  it to the LDK graph at once (after checking it is for the failing channel
+  and signed by its owner) and hands it to Core Lightning's `addgossip`, so
+  gossipd stores it too. This matters with rapid gossip sync, whose
+  snapshots can be hours behind the fees and CLTV deltas nodes enforce: the
+  next `barqpay` routes with the fresh policy, without waiting for a sync.
+- Only liquidity failures lower the channel's liquidity estimate in the
+  LDK scorer: `temporary_channel_failure` (unless its update disables the
+  channel), and failures after which the channel is unusable
+  (`unknown_next_peer`, `permanent_channel_failure`,
+  `required_channel_feature_missing`). Fee, CLTV and amount errors only
+  apply the update; node-level and recipient errors touch neither.
+
+The scorer and the graph are persisted after each failure.
 
 A BOLT12 invoice is obtained as usual with `fetchinvoice`; barq routes to
 the introduction node of one of its blinded paths and builds the blinded
@@ -224,10 +258,9 @@ payloads itself.
 
 ## `rpay`
 
-`pay`'s interface, always served by barq: the same parameters (`bolt11`,
-`amount_msat`, `label`, by name or position; `pay`'s other parameters are
-accepted and ignored), the same result format and the same error codes
-(203, 205, 210). It needs no hook, so it works on every Core Lightning
+`pay`'s interface, always served by barq: the same parameters, by name or
+position, handled as described for `pay` above, the same result format and
+the same error codes (200, 203, 205, 206, 207, 210). It needs no hook, so it works on every Core Lightning
 version and alongside xpay. Every payment is also recorded in
 `barqinspect`.
 

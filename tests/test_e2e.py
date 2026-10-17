@@ -96,7 +96,8 @@ def test_e2e_pay(node_factory, kind):
     parts = l1.rpc.listsendpays(payment_hash=result["payment_hash"])["payments"]
     assert len(parts) == 1, parts
     assert parts[0]["status"] == "complete"
-    assert parts[0].get("partid", 0) == 0
+    # Like `pay`: the first attempt is part 1 of group 1.
+    assert (parts[0]["groupid"], parts[0]["partid"]) == (1, 1)
 
     # The recipient got the whole amount in that single HTLC.
     received = payee_invoice(l3, inv)
@@ -184,3 +185,61 @@ def test_e2e_fail_no_route(node_factory, kind):
     payment_hash = payment_hash_of(l1, inv)
     assert l1.rpc.listsendpays(payment_hash=payment_hash)["payments"] == []
     assert payee_invoice(l3, inv)["status"] == "unpaid"
+
+
+def test_e2e_stale_fee_learned_from_failure(node_factory):
+    """l2 raises its fee towards l3 but its gossip never reaches l1: the
+    first barqpay fails with fee_insufficient, barq learns the new policy
+    from the channel_update carried by the error, and the second barqpay
+    succeeds without any gossip sync in between."""
+    l1, l2, l3 = three_nodes(node_factory)
+    l2_l3 = only_one(l2.rpc.listpeerchannels(l3.info["id"])["channels"])["short_channel_id"]
+
+    def l1_view():
+        """l2 -> l3 as l1's gossipd knows it."""
+        channels = l1.rpc.listchannels(l2_l3)["channels"]
+        return only_one([c for c in channels if c["source"] == l2.info["id"]])
+
+    old = l1_view()
+    # barq's graph holds the old policy before the gossip stops flowing.
+    assert l1.rpc.call("barqsyncgossip", {})["channels"] == 2
+
+    # l2 stops streaming gossip to its peers, then raises its fee at once
+    # (setchannel keeps honouring the old fee for 10 minutes by default).
+    l2.rpc.call("dev-suppress-gossip", {})
+    new_base = old["base_fee_millisatoshi"] + 5_000
+    new_ppm = old["fee_per_millionth"] + 2_000
+    l2.rpc.setchannel(l2_l3, feebase=new_base, feeppm=new_ppm, enforcedelay=0)
+    assert l1_view()["base_fee_millisatoshi"] == old["base_fee_millisatoshi"]
+
+    amount = 100_000
+    inv = new_invoice("bolt11", l1, l3, amount, "e2e-stale-fee")
+    result = l1.rpc.call("barqpay", {"invoice": inv})
+
+    # The first attempt failed with fee_insufficient on l2 -> l3 ...
+    first, second = result["attempts"]
+    assert first["status"] == "failed", first
+    assert "WIRE_FEE_INSUFFICIENT" in first["error"], first
+    assert first["erring_channel"] == l2_l3, first
+    assert l1.daemon.is_in_log(f"applied channel_update for {l2_l3}")
+    # A fee error is not a liquidity failure: the scorer is left alone,
+    # and the channel is tried again with the new policy.
+    assert l1.daemon.is_in_log("failed at FailurePoint .*: Policy")
+    assert second["status"] == "complete", second
+    assert [h["channel"] for h in second["route"]] == [h["channel"] for h in first["route"]]
+
+    # l1's gossipd learnt the update through addgossip, not through gossip.
+    view = l1_view()
+    assert view["base_fee_millisatoshi"] == new_base, view
+    assert view["fee_per_millionth"] == new_ppm, view
+
+    # Both attempts are parts of one payment, like `pay` makes them.
+    parts = l1.rpc.listsendpays(payment_hash=result["payment_hash"])["payments"]
+    assert sorted((p["groupid"], p["partid"], p["status"]) for p in parts) == [
+        (1, 1, "failed"),
+        (1, 2, "complete"),
+    ]
+    assert result["status"] == "complete"
+    assert [h["id"] for h in result["route"]] == [l2.info["id"], l3.info["id"]]
+    assert result["fee_msat"] == new_base + amount * new_ppm // 1_000_000, result
+    assert payee_invoice(l3, inv)["status"] == "paid"

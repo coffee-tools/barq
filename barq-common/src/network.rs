@@ -20,6 +20,7 @@ use anyhow::{Context, Result};
 
 use lampo_common::bitcoin::hashes::{sha256, Hash};
 use lampo_common::conf::Network;
+use lampo_common::ldk::ln::msgs::ChannelUpdate;
 use lampo_common::ldk::routing::gossip::NetworkGraph as LdkNetworkGraph;
 use lampo_common::ldk::routing::router::Path;
 use lampo_common::ldk::routing::scoring::{
@@ -333,6 +334,23 @@ impl NetworkContext {
         }
     }
 
+    /// Apply a `channel_update` learned from an onion failure to the graph,
+    /// so the next route uses the policy the node really enforces.
+    ///
+    /// The signature is verified against the node keys of the announced
+    /// channel: a forwarding node cannot plant a policy for a channel that
+    /// is not its own. Updates for channels the graph does not know, or
+    /// older than the one it has, are rejected.
+    pub fn apply_channel_update(&self, update: &ChannelUpdate) -> Result<()> {
+        self.graph
+            .update_channel(update)
+            .map_err(|err| anyhow::anyhow!("{}", err.err))?;
+        if let Err(err) = self.persist() {
+            log::warn!("failed to persist network graph: {err}");
+        }
+        Ok(())
+    }
+
     /// Tell the scorer the payment along `path` failed at channel `scid`.
     pub fn payment_failed(&self, path: &Path, scid: u64) {
         self.scorer
@@ -352,6 +370,17 @@ impl NetworkContext {
         data.extend_from_slice(&std::process::id().to_le_bytes());
         data.extend_from_slice(&(self as *const Self as usize).to_le_bytes());
         sha256::Hash::hash(&data).to_byte_array()
+    }
+
+    /// The channels of `node` in the graph, to route around the node.
+    pub fn channels_of(&self, node: &lampo_common::secp256k1::PublicKey) -> Vec<u64> {
+        let graph = self.graph.read_only();
+        graph
+            .node(&lampo_common::ldk::routing::gossip::NodeId::from_pubkey(
+                node,
+            ))
+            .map(|info| info.channels.clone())
+            .unwrap_or_default()
     }
 
     /// Number of channels and nodes currently known.
