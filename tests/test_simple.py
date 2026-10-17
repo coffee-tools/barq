@@ -33,7 +33,9 @@ def test_pay_amounts(node_factory):
 
     result = l1.rpc.call("barqpay", {"invoice": inv})
     assert result["status"] == "complete"
-    assert result["strategy"] == "probabilistic"
+    # l2 is a peer: both strategies find the same zero-fee route and the
+    # ranking keeps the first strategy, `direct`.
+    assert result["strategy"] == "direct"
     assert result["invoice_type"] == "bolt11"
     assert result["amount_msat"] == 123000
     assert result["fee_msat"] == 0
