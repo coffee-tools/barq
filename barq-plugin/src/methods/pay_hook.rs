@@ -98,44 +98,109 @@ pub fn parse_amount_msat(value: &Value) -> Result<u64, String> {
     text.parse().map_err(|_| invalid())
 }
 
+/// `pay`'s parameters, in positional order.
+const PAY_PARAMS: [&str; 13] = [
+    "bolt11",
+    "amount_msat",
+    "label",
+    "riskfactor",
+    "maxfeepercent",
+    "retry_for",
+    "maxdelay",
+    "exemptfee",
+    "localinvreqid",
+    "exclude",
+    "maxfee",
+    "description",
+    "partial_msat",
+];
+
+/// `pay`'s default fee limit: 0.5% of the amount, or 5000msat when that
+/// is more.
+const DEFAULT_MAXFEEPERCENT: f64 = 0.5;
+const DEFAULT_EXEMPTFEE_MSAT: u64 = 5000;
+
 /// Translate `pay`'s parameters (by name or by position) into a `barqpay`
-/// request. Parameters barq has no equivalent for are ignored.
+/// request. `riskfactor`, `retry_for`, `maxdelay` and `localinvreqid`
+/// have no barq equivalent and are accepted but ignored.
 pub fn barqpay_request(params: &Value) -> Result<BarqPayRequest, String> {
-    let (bolt11, amount, label) = match params {
-        Value::Object(map) => (
-            map.get("bolt11").cloned(),
-            map.get("amount_msat").cloned(),
-            map.get("label").cloned(),
-        ),
-        // pay's positional order: bolt11, amount_msat, label, ...
-        Value::Array(items) => (
-            items.first().cloned(),
-            items.get(1).cloned(),
-            items.get(2).cloned(),
-        ),
-        _ => (None, None, None),
+    let get = |name: &str| -> Option<Value> {
+        let value = match params {
+            Value::Object(map) => match name {
+                // `invstring` is the old name of `bolt11`.
+                "bolt11" => map.get("bolt11").or_else(|| map.get("invstring")),
+                _ => map.get(name),
+            },
+            Value::Array(items) => PAY_PARAMS
+                .iter()
+                .position(|p| *p == name)
+                .and_then(|i| items.get(i)),
+            _ => None,
+        };
+        value.filter(|v| !v.is_null()).cloned()
     };
-    let invoice = bolt11
+    let amount = |name: &str| -> Result<Option<u64>, String> {
+        get(name).map(|v| parse_amount_msat(&v)).transpose()
+    };
+    let invoice = get("bolt11")
         .as_ref()
         .and_then(Value::as_str)
-        .ok_or("missing `bolt11`")?
+        .ok_or("missing required parameter: bolt11")?
         .to_owned();
-    let amount_msat = match amount {
-        None | Some(Value::Null) => None,
-        Some(value) => Some(parse_amount_msat(&value)?),
+    let label = get("label").map(|label| match label {
+        Value::String(label) => label,
+        other => other.to_string(),
+    });
+    let maxfeepercent = get("maxfeepercent")
+        .map(|v| {
+            v.as_f64()
+                .or_else(|| v.as_str().and_then(|s| s.parse().ok()))
+                .filter(|p| *p >= 0.0)
+                .ok_or(format!("invalid maxfeepercent {v}"))
+        })
+        .transpose()?;
+    let exemptfee = amount("exemptfee")?;
+    let maxfee = amount("maxfee")?;
+    if maxfee.is_some() && (maxfeepercent.is_some() || exemptfee.is_some()) {
+        return Err("If you specify maxfee, cannot specify maxfeepercent or exemptfee.".to_owned());
+    }
+    let exclude = match get("exclude") {
+        None => vec![],
+        Some(Value::Array(items)) => items
+            .iter()
+            .map(|item| {
+                item.as_str()
+                    .map(str::to_owned)
+                    .ok_or(format!("invalid exclude {item}"))
+            })
+            .collect::<Result<_, _>>()?,
+        Some(other) => return Err(format!("exclude must be an array, not {other}")),
     };
-    let label = match label {
-        None | Some(Value::Null) => None,
-        Some(Value::String(label)) => Some(label),
-        Some(other) => Some(other.to_string()),
-    };
+    let description = get("description").map(|d| match d {
+        Value::String(d) => d,
+        other => other.to_string(),
+    });
     Ok(BarqPayRequest {
         invoice,
-        amount_msat,
+        amount_msat: amount("amount_msat")?,
         strategy: None,
         use_rapid_gossip_sync: false,
         label,
         max_attempts: None,
+        maxfeepercent: if maxfee.is_some() {
+            None
+        } else {
+            Some(maxfeepercent.unwrap_or(DEFAULT_MAXFEEPERCENT))
+        },
+        exemptfee_msat: if maxfee.is_some() {
+            None
+        } else {
+            Some(exemptfee.unwrap_or(DEFAULT_EXEMPTFEE_MSAT))
+        },
+        maxfee_msat: maxfee,
+        exclude,
+        partial_msat: amount("partial_msat")?,
+        description,
     })
 }
 
@@ -144,7 +209,7 @@ pub fn pay_result(barq: &Value, created_at: f64) -> Value {
     let mut result = json!({
         "payment_hash": barq["payment_hash"],
         "created_at": created_at,
-        "parts": 1,
+        "parts": barq["parts"].as_u64().unwrap_or(1).max(1),
         "amount_msat": barq["amount_msat"],
         "amount_sent_msat": barq["amount_sent_msat"],
         "payment_preimage": barq["payment_preimage"],
