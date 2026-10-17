@@ -378,7 +378,8 @@ mod tests {
         assert_eq!(onion.first_hop_amount_msat, 5010);
         assert_eq!(onion.first_hop_cltv_expiry, 149);
 
-        // Forward payload for hop 1: amt 5000 (0x1388), cltv 109 (0x6d), scid 0xbb
+        // Forward payload for hop 1: amt 5000 (0x1388), cltv 109 (0x6d),
+        // scid 0xbb
         let expected = vec![
             2, 2, 0x13, 0x88, 4, 1, 0x6d, 6, 8, 0, 0, 0, 0, 0, 0, 0, 0xbb,
         ];
