@@ -65,6 +65,9 @@ impl LDKRoutingStrategy {
         // Core Lightning `sendonion` sends one HTLC per call; keep the
         // route single-path until multi-part payments are wired in.
         params.max_path_count = 1;
+        params
+            .previously_failed_channels
+            .extend(input.excluded_channels.iter().copied());
         Ok(params)
     }
 
@@ -217,6 +220,8 @@ mod tests {
                 is_public: true,
             }],
             expiry_time: None,
+            strategy: None,
+            excluded_channels: vec![],
         };
         let output = strategy.route(&input).unwrap();
         assert_eq!(output.path.hops.len(), 1);
@@ -252,6 +257,8 @@ mod tests {
                 is_public: true,
             }],
             expiry_time: None,
+            strategy: None,
+            excluded_channels: vec![],
         };
         assert!(strategy.route(&input).is_err());
     }

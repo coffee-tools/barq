@@ -415,6 +415,8 @@ impl SimulatedNetwork {
             final_cltv_delta: 18,
             first_hops: self.first_hops(from),
             expiry_time: None,
+            strategy: None,
+            excluded_channels: vec![],
         }
     }
 

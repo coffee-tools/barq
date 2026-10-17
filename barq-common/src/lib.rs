@@ -7,6 +7,7 @@ pub mod gossip_store;
 pub mod network;
 pub mod onion;
 pub mod scid;
+pub mod selection;
 pub mod simulation;
 pub mod strategy;
 

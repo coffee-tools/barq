@@ -179,10 +179,12 @@ pub struct SendOnionRequest<'a> {
     pub label: Option<&'a str>,
 }
 
-pub async fn sendonion(
+/// `sendonion`, keeping Core Lightning's error code so the caller can tell
+/// a local channel failure (204) from other errors.
+pub async fn sendonion_raw(
     state: &State,
     req: SendOnionRequest<'_>,
-) -> Result<SendPayStatus, PluginError> {
+) -> Result<SendPayStatus, clightningrpc_common::errors::RpcError> {
     let mut payload = json!({
         "onion": req.onion,
         "first_hop": req.first_hop,
@@ -200,7 +202,7 @@ pub async fn sendonion(
     if let Some(label) = req.label {
         payload["label"] = Value::String(label.to_owned());
     }
-    state.call("sendonion", payload).await.map_err(rpc_err)
+    state.call("sendonion", payload).await
 }
 
 /// Error details Core Lightning attaches to a failed `waitsendpay`.
