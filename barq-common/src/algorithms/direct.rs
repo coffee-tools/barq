@@ -1,13 +1,17 @@
 use anyhow::Result;
 
-use crate::strategy::{RouteHop, RouteInput, RouteOutput, Strategy};
+use lampo_common::ldk::ln::features::{ChannelFeatures, NodeFeatures};
+use lampo_common::ldk::routing::router::{Path, RouteHop};
+
+use crate::strategy::{Payee, RouteInput, RouteOutput, Strategy};
 
 /// A routing strategy that attempts to find a direct route from the source to
 /// the destination.
 ///
 /// The `Direct` strategy checks if the destination node is directly connected
-/// to the source node through any of the channels. If such a direct connection
+/// to the source node through any of our channels. If such a direct connection
 /// exists, it constructs a route with that single hop.
+#[derive(Default)]
 pub struct Direct;
 
 impl Direct {
@@ -16,74 +20,59 @@ impl Direct {
     }
 }
 
-impl Default for Direct {
-    fn default() -> Self {
-        Direct::new()
-    }
-}
-
 impl Strategy for Direct {
-    /// Determines if the Direct routing strategy can be applied to the given
-    /// input.
-    ///
-    /// This method checks if the destination node is directly connected to the
-    /// source node within the network graph.
+    /// The destination must be known (BOLT11) and be one of our peers.
     fn can_apply(&self, input: &RouteInput) -> Result<bool> {
-        let source = input.src_pubkey.clone();
-        let node = input
-            .graph
-            .get_node(&source)
-            .ok_or_else(|| anyhow::anyhow!("Failed to retrieve source node from graph"))?;
-
-        // Check if the destination is directly connected to the source
-        for channel in &node.channels {
-            if channel.node1 == input.dest_pubkey || channel.node2 == input.dest_pubkey {
-                return Ok(true);
-            }
-        }
-        Ok(false)
+        let Some(dest) = input.payee.node_id() else {
+            return Ok(false);
+        };
+        Ok(input.first_hops.iter().any(|hop| hop.peer_id == dest))
     }
 
     /// Routes the payment directly from the source to the destination node.
-    ///
-    /// This method constructs a route with a single hop if a direct connection
-    /// exists between the source and destination nodes.
     fn route(&self, input: &RouteInput) -> Result<RouteOutput> {
-        let source = input.src_pubkey.clone();
-        let node = input
-            .graph
-            .get_node(&source)
-            .ok_or_else(|| anyhow::anyhow!("Failed to retrieve node from graph"))?;
+        let dest = match &input.payee {
+            Payee::Clear { node_id, .. } => *node_id,
+            Payee::Blinded { .. } => {
+                anyhow::bail!("The direct strategy cannot pay to a blinded path")
+            }
+        };
 
-        let channels = node
-            .channels
+        let channels: Vec<_> = input
+            .first_hops
             .iter()
-            .filter(|ch| ch.node1 == input.dest_pubkey || ch.node2 == input.dest_pubkey)
-            .collect::<Vec<_>>();
-
+            .filter(|hop| hop.peer_id == dest)
+            .collect();
         if channels.is_empty() {
-            anyhow::bail!("No channel with `{}` found", input.dest_pubkey);
+            anyhow::bail!("No channel with `{dest}` found");
         }
 
-        let channels = channels
-            .iter()
-            .filter(|c| c.capacity >= input.amount_msat)
-            .collect::<Vec<_>>();
-        let Some(channel) = channels.first() else {
+        let Some(channel) = channels.iter().find(|hop| {
+            hop.spendable_msat >= input.amount_msat
+                && hop.htlc_minimum_msat <= input.amount_msat
+                && hop.htlc_maximum_msat >= input.amount_msat
+        }) else {
             anyhow::bail!(
-                "No channel with capacity `{}` with peer `{}` found",
-                input.amount_msat,
-                input.dest_pubkey
+                "No channel with peer `{dest}` can carry {} msat",
+                input.amount_msat
             );
         };
 
-        let hop = RouteHop::new(
-            input.dest_pubkey.clone(),
-            channel.short_channel_id.clone(),
-            input.cltv as u32,
-            input.amount_msat,
-        );
+        let hop = RouteHop {
+            pubkey: dest,
+            node_features: NodeFeatures::empty(),
+            short_channel_id: channel.scid,
+            channel_features: ChannelFeatures::empty(),
+            fee_msat: input.amount_msat,
+            cltv_expiry_delta: input.final_cltv_delta,
+            maybe_announced_channel: channel.is_public,
+        };
 
-        Ok(RouteOutput { path: vec![hop] })
+        Ok(RouteOutput {
+            path: Path {
+                hops: vec![hop],
+                blinded_tail: None,
+            },
+        })
     }
 }
