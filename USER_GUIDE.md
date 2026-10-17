@@ -61,6 +61,7 @@ graph. It leaves out some information, which matters in these cases:
 | `barq-rgs-url`          | `auto`  | RGS snapshot endpoint without the trailing timestamp. `auto` uses the public LDK server on mainnet/testnet, `off` disables RGS. |
 | `barq-sync-interval`    | `3600`  | Seconds between background refreshes of the graph (RGS + gossip_store). `0` disables the background sync.                     |
 | `barq-cln-gossip`       | `true`  | Feed the LDK graph with the Core Lightning `gossip_store`.                                                                    |
+| `barq-max-attempts`     | `3`     | How many routes `barqpay` tries before giving up.                                                                             |
 
 Example for a regtest node with a self-hosted RGS server:
 
@@ -102,9 +103,24 @@ Pay a BOLT11 or BOLT12 invoice.
 | ----------------------- | -------- | ------------------------------------------------------------------------------------------- |
 | `invoice`               | yes      | The BOLT11 or BOLT12 invoice (`bolt11_invoice` is still accepted).                          |
 | `amount_msat`           | no       | Amount to pay when the invoice has none.                                                    |
-| `strategy`              | no       | `probabilistic` (default, LDK path finding) or `direct` (pay a peer over a shared channel). |
+| `strategy`              | no       | Force `probabilistic` (LDK path finding) or `direct` (pay a peer over a shared channel). By default every applicable strategy is ranked. |
 | `use_rapid_gossip_sync` | no       | Refresh the graph from the RGS server right before routing.                                 |
 | `label`                 | no       | Label stored with the payment.                                                              |
+| `max_attempts`          | no       | How many routes to try; defaults to the `barq-max-attempts` option (3).                    |
+
+### Strategy selection and fallback
+
+Without `strategy`, every applicable strategy proposes a route and the
+routes are ranked by total fee, then total CLTV delta, then number of hops,
+then strategy order (`direct` before `probabilistic`). Two strategies that
+propose the same channels count once.
+
+barq tries the best route. If it fails along the way, barq excludes the
+channel that failed, ranks the strategies again and tries the next route,
+up to `max_attempts`. A rejection by the destination (or inside its BOLT12
+blinded path) ends the payment at once, since another route cannot help.
+Every route tried is listed in `attempts`, in the response and in the
+error data.
 
 The response reports the status, the preimage, the route (`id`, `channel`,
 `fee_msat`, `cltv_expiry_delta` per hop), the number of blinded hops for
@@ -141,7 +157,9 @@ payloads itself.
 ## `barqrouteinfo`
 
 Compute a route without paying: `dest_pubkey`, `amount_msat`, optional
-`cltv` (final CLTV delta, default 18) and `strategy`.
+`cltv` (final CLTV delta, default 18) and `strategy`. The response shows the
+best route and every ranked `candidate` (in the order `barqpay` would try
+them), plus the strategies that had no route and why (`rejected`).
 
 ## `barqsyncgossip`
 

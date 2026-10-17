@@ -134,6 +134,8 @@ def test_e2e_fail_recipient_rejects(node_factory, kind):
         ), data
         assert data["erring_in_blinded_path"] is True
 
+    # The destination rejected it: barq does not try another route.
+    assert len(data["attempts"]) == 1
     assert_not_paid(l1, None, inv)
     assert not l3.rpc.call("listinvoices", {"invstring": inv})["invoices"]
 

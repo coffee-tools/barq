@@ -27,6 +27,7 @@ use crate::methods;
 pub const OPT_RGS_URL: &str = "barq-rgs-url";
 pub const OPT_SYNC_INTERVAL: &str = "barq-sync-interval";
 pub const OPT_CLN_GOSSIP: &str = "barq-cln-gossip";
+pub const OPT_MAX_ATTEMPTS: &str = "barq-max-attempts";
 /// Developer option: load a mocked graph (JSON `GraphSpec`) at startup.
 pub const OPT_DEV_SIMULATED_GRAPH: &str = "barq-dev-simulated-graph";
 
@@ -44,6 +45,8 @@ pub(crate) struct State {
     pub(crate) ctx: Option<Arc<NetworkContext>>,
     /// Runs the async RPC calls and the background gossip sync.
     pub(crate) runtime: Arc<Runtime>,
+    /// Default number of routes `barqpay` tries.
+    pub(crate) max_attempts: u32,
 }
 
 impl State {
@@ -61,6 +64,7 @@ impl State {
                     .build()
                     .expect("building the tokio runtime"),
             ),
+            max_attempts: 3,
         }
     }
 
@@ -143,6 +147,14 @@ pub fn build_plugin() -> anyhow::Result<Plugin<State>> {
             false,
         )
         .add_opt(
+            OPT_MAX_ATTEMPTS,
+            "int",
+            Some("3".to_owned()),
+            "How many routes barqpay tries before giving up; each failure excludes the \
+             failing channel and re-ranks the strategies.",
+            false,
+        )
+        .add_opt(
             OPT_DEV_SIMULATED_GRAPH,
             "string",
             None,
@@ -193,6 +205,10 @@ fn on_init(plugin: &mut Plugin<State>) -> Value {
     };
     let use_cln_gossip: bool = plugin.get_opt::<bool>(OPT_CLN_GOSSIP).unwrap_or(true);
     let interval: i64 = plugin.get_opt::<i64>(OPT_SYNC_INTERVAL).unwrap_or(3600);
+    plugin.state.max_attempts = plugin
+        .get_opt::<i64>(OPT_MAX_ATTEMPTS)
+        .unwrap_or(3)
+        .clamp(1, 100) as u32;
 
     let gossip_store = if use_cln_gossip {
         Some(lightning_dir.join("gossip_store"))
