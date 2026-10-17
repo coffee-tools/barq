@@ -1,7 +1,7 @@
+//! `barqpay`: route with the selected strategy, build the onion and let
+//! Core Lightning send it.
 use std::str::FromStr;
 
-use barq_common::algorithms::direct::Direct;
-use barq_common::algorithms::probabilistic::LDKRoutingStrategy;
 use serde::{Deserialize, Serialize};
 use serde_json as json;
 
@@ -9,54 +9,37 @@ use clightningrpc_plugin::error;
 use clightningrpc_plugin::errors::PluginError;
 use clightningrpc_plugin::plugin::Plugin;
 
-use barq_common::graph::NetworkGraph;
+use barq_common::algorithms::direct::Direct;
+use barq_common::algorithms::probabilistic::LDKRoutingStrategy;
+use barq_common::ldk::routing::router::Path;
+use barq_common::onion::{build_onion_hops, locate_failure, FailurePoint, RecipientFields};
+use barq_common::scid;
 use barq_common::strategy::{RouteInput, Strategy, StrategyKind};
-use barq_common::Network;
 
-use crate::methods::graph::cln::build_cln_network_graph;
-use crate::methods::graph::p2p::build_p2p_network_graph;
+use crate::methods::cln::{
+    self, OnionHopJson, SendOnionFirstHop, SendOnionRequest, SendPayStatus, WaitSendPay,
+};
+use crate::methods::context;
+use crate::methods::invoice::{self, InvoiceKind};
 use crate::plugin::State;
-
-/// Response from `sendpay` RPC command of Core Lightning
-///
-/// See: https://docs.corelightning.org/reference/lightning-sendpay#return-value
-#[derive(Deserialize, Debug, Serialize)]
-pub struct CLNSendpayResponse {
-    id: u64,
-    created_index: u64,
-    payment_hash: String,
-    groupid: u64,
-    destination: String,
-    amount_msat: u64,
-    amount_sent_msat: u64,
-    created_at: u64,
-    status: Status,
-}
-
-/// Status of the payment
-#[derive(Deserialize, Debug, Serialize)]
-#[serde(rename_all = "lowercase")]
-enum Status {
-    Pending,
-    Complete,
-}
 
 /// Request payload for Barq pay RPC method
 // serde(default) sets the default value to None if no input is given.
 #[derive(Deserialize, Serialize)]
 pub struct BarqPayRequest {
-    pub bolt11_invoice: String,
+    /// A BOLT11 or BOLT12 invoice.
+    #[serde(alias = "bolt11_invoice")]
+    pub invoice: String,
     #[serde(default)]
     pub amount_msat: Option<u64>,
     /// The strategy to use for routing the payment
     #[serde(default)]
     pub strategy: Option<String>,
-    /// Whether to use the rapid gossip sync map to build the network graph
-    ///
-    /// If false, we will try to use CLN gossip map to build the network
-    /// graph
+    /// Refresh the graph from the rapid gossip sync server before routing.
     #[serde(default)]
     pub use_rapid_gossip_sync: bool,
+    #[serde(default)]
+    pub label: Option<String>,
 }
 
 impl BarqPayRequest {
@@ -68,149 +51,268 @@ impl BarqPayRequest {
     }
 }
 
+/// One hop of the route, in Core Lightning terms.
+#[derive(Deserialize, Serialize)]
+pub struct RouteHopJson {
+    pub id: String,
+    pub channel: String,
+    pub fee_msat: u64,
+    pub cltv_expiry_delta: u32,
+}
+
 /// Response payload for Barq pay RPC method
 #[derive(Deserialize, Serialize)]
 pub struct BarqPayResponse {
     pub status: String,
+    pub strategy: String,
+    pub invoice_type: String,
+    pub payment_hash: String,
     #[serde(skip_serializing_if = "Option::is_none")]
-    pub message: Option<String>,
+    pub payment_preimage: Option<String>,
     #[serde(skip_serializing_if = "Option::is_none")]
-    pub response: Option<CLNSendpayResponse>,
+    pub destination: Option<String>,
+    pub amount_msat: u64,
+    pub amount_sent_msat: u64,
+    pub fee_msat: u64,
+    pub route: Vec<RouteHopJson>,
+    pub blinded_hops: usize,
+    pub response: SendPayStatus,
 }
 
-/// Response from `decodepay` RPC command of Core Lightning
+pub fn strategy_name(kind: StrategyKind) -> &'static str {
+    match kind {
+        StrategyKind::Direct => "direct",
+        StrategyKind::Probabilistic => "probabilistic",
+    }
+}
+
+pub fn build_strategy(state: &State, kind: StrategyKind) -> Result<Box<dyn Strategy>, PluginError> {
+    Ok(match kind {
+        StrategyKind::Direct => Box::new(Direct::new()),
+        StrategyKind::Probabilistic => Box::new(LDKRoutingStrategy::new(state.ctx()?)),
+    })
+}
+
+/// Describe an LDK path with Core Lightning identifiers.
+pub fn describe_path(path: &Path) -> Vec<RouteHopJson> {
+    path.hops
+        .iter()
+        .map(|hop| RouteHopJson {
+            id: hop.pubkey.to_string(),
+            channel: scid::to_cln(hop.short_channel_id),
+            fee_msat: hop.fee_msat,
+            cltv_expiry_delta: hop.cltv_expiry_delta,
+        })
+        .collect()
+}
+
+/// Barq RPC method to execute a payment.
 ///
-/// See: https://docs.corelightning.org/reference/lightning-decodepay#return-value
-#[derive(Deserialize, Debug)]
-struct Bolt11 {
-    /// The BIP173 name for the currency
-    currency: String,
-    payee: String,
-    amount_msat: Option<u64>,
-    payment_hash: String,
-    min_final_cltv_expiry: u64,
-    payment_secret: Option<String>,
-}
-
-/// Response from `getinfo` RPC command of Core Lightning
-///
-/// See: https://docs.corelightning.org/reference/lightning-getinfo#return-value
-#[derive(Debug, Deserialize)]
-pub struct NodeInfo {
-    pub id: String,
-    /// Represents the type of network on the node are working
-    pub network: String,
-}
-
-/// Barq RPC method to execute a payment
+/// cln4rust dispatches RPC methods synchronously, so the async payment flow
+/// runs to completion on the plugin's tokio runtime.
 pub fn barq_pay(
     plugin: &mut Plugin<State>,
     request: json::Value,
 ) -> Result<json::Value, PluginError> {
     log::info!("barqpay called with request: {}", request);
     let request: BarqPayRequest = json::from_value(request).map_err(|err| error!("{err}"))?;
+    let state = plugin.state.clone();
+    plugin.state.block_on(pay(state, request))
+}
 
-    let state = &plugin.state;
-    // FIXME: the decodepay is deprecated, we should use `decode`.
-    let b11: Bolt11 = state
-        .call(
-            "decodepay",
-            serde_json::json!({
-                "bolt11": request.bolt11_invoice
-            }),
-        )
-        .map_err(|err| PluginError::new(err.code, &err.message, err.data))?;
+async fn pay(state: State, request: BarqPayRequest) -> Result<json::Value, PluginError> {
+    let state = &state;
+    let ctx = state.ctx()?;
 
-    // Get the network of the invoice
-    // See: https://github.com/lightning/bolts/blob/master/11-payment-encoding.md#human-readable-part
-    let invoice_network = match b11.currency.as_str() {
-        "bc" => Network::Bitcoin,
-        "tb" => Network::Testnet,
-        "tbs" => Network::Signet,
-        "bcrt" => Network::Regtest,
-        _ => return Err(error!("Unknown currency: {}", b11.currency)),
-    };
+    // Decode the invoice while loading our node, channels and gossip.
+    let (invoice, node) = tokio::try_join!(
+        invoice::decode(state, &request.invoice),
+        context::load(state)
+    )?;
+    if let Some(invoice_network) = invoice.network {
+        if invoice_network != node.network {
+            return Err(error!(
+                "Invoice network ({invoice_network}) does not match node network ({})",
+                node.network
+            ));
+        }
+    }
 
-    let node_info: NodeInfo = state
-        .call("getinfo", serde_json::json!({}))
-        .map_err(|err| PluginError::new(err.code, &err.message, err.data))?;
-
-    let amount = match (b11.amount_msat, request.amount_msat) {
+    let amount_msat = match (invoice.amount_msat, request.amount_msat) {
         (Some(_), Some(_)) => {
-            return Err(error!("barqpay execution failed: amount_msat not required"))
+            return Err(error!(
+                "barqpay execution failed: amount_msat not required, the invoice has an amount"
+            ))
         }
         (Some(amount), None) | (None, Some(amount)) => amount,
-        (None, None) => return Err(error!("barqpay execution failed: amount_msat not required")),
+        (None, None) => {
+            return Err(error!(
+                "barqpay execution failed: amount_msat required for an invoice without amount"
+            ))
+        }
     };
-
-    let node_network = node_info.network;
-    let node_network = Network::from_str(&node_network).map_err(|e| error!("{e}"))?;
-
-    if invoice_network != node_network {
+    if amount_msat == 0 {
         return Err(error!(
-            "Invoice network ({}) does not match node network ({})",
-            invoice_network, node_network
+            "barqpay execution failed: amount_msat must be positive"
         ));
     }
 
-    let strategy = request.strategy().map_err(|e| error!("{e}"))?;
-    // If the probabilistic strategy is selected, build the network graph from the
-    // gossip map. Else, build the network graph from the plugin state
-    let network_graph: Box<dyn NetworkGraph> = match strategy {
-        StrategyKind::Direct => Box::new(build_cln_network_graph(state)?),
-        StrategyKind::Probabilistic => Box::new(build_p2p_network_graph(state)?),
-    };
-
-    let input = RouteInput {
-        src_pubkey: node_info.id.clone(),
-        dest_pubkey: b11.payee.clone(),
-        network: node_network,
-        amount_msat: amount,
-        cltv: b11.min_final_cltv_expiry,
-        graph: network_graph,
-        use_rapid_gossip_sync: request.use_rapid_gossip_sync,
-    };
-
-    let strategy: Box<dyn Strategy> = match strategy {
-        StrategyKind::Direct => Box::new(Direct::new()),
-        StrategyKind::Probabilistic => Box::new(LDKRoutingStrategy::new(
-            node_network,
-            plugin.state.cln_rpc_path.clone().unwrap(),
-        )),
-    };
-
-    // Execute the routing process
-    let output = strategy.route(&input).map_err(|err| error!("{err}"))?;
-    if output.path.is_empty() {
-        return Err(error!("No route found between us and `{}`", b11.payee));
+    if request.use_rapid_gossip_sync {
+        ctx.sync_rapid_gossip()
+            .await
+            .map_err(|err| error!("rapid gossip sync failed: {err}"))?;
     }
-    log::info!("path selected by the strategy is: `{:?}`", output.path);
-    let sendpay_request: json::Value = serde_json::json!({
-        "route": output.path,
-        "payment_hash": b11.payment_hash,
-        "payment_secret": b11.payment_secret,
-        "partid": 0,
-    });
 
-    let sendpay_response: CLNSendpayResponse = state
-        .call("sendpay", sendpay_request)
-        .map_err(|err| PluginError::new(err.code, &err.message, err.data))?;
+    if node.first_hops.is_empty() {
+        return Err(error!("No usable channel to pay from"));
+    }
 
-    let waitsendpay_request: json::Value = serde_json::json!({
-        "payment_hash": sendpay_response.payment_hash.clone(),
-        "partid": 0,
-    });
-
-    let waitsendpay_response: CLNSendpayResponse =
-        state
-            .call("waitsendpay", waitsendpay_request)
-            .map_err(|err| PluginError::new(err.code, &err.message, err.data))?;
-
-    // Construct the response from the output
-    let response = BarqPayResponse {
-        status: "success".to_string(),
-        message: None,
-        response: Some(waitsendpay_response),
+    let kind = request.strategy().map_err(|e| error!("{e}"))?;
+    let input = RouteInput {
+        src_pubkey: node.our_id,
+        payee: invoice.payee.clone(),
+        amount_msat,
+        final_cltv_delta: invoice.final_cltv_delta,
+        first_hops: node.first_hops.clone(),
+        expiry_time: invoice.expiry_time,
     };
-    Ok(json::to_value(response)?)
+    let path = context::route_with(state, kind, &input)?.path;
+    log::info!("path selected by `{}`: {:?}", strategy_name(kind), path);
+
+    // Core Lightning computes CLTVs relative to the next block.
+    let onion = build_onion_hops(
+        &path,
+        amount_msat,
+        &RecipientFields {
+            payment_secret: invoice.payment_secret,
+            payment_metadata: invoice.payment_metadata.clone(),
+        },
+        node.blockheight + 1,
+    )
+    .map_err(|err| error!("cannot build the onion: {err}"))?;
+
+    let hops: Vec<OnionHopJson> = onion
+        .hops
+        .iter()
+        .map(|hop| OnionHopJson {
+            pubkey: hop.pubkey.to_string(),
+            payload: hex::encode(&hop.payload),
+        })
+        .collect();
+    let created = cln::createonion(state, &hops, &invoice.payment_hash).await?;
+
+    let first = &path.hops[0];
+    let first_channel = input
+        .first_hops
+        .iter()
+        .find(|hop| hop.scid == first.short_channel_id && hop.peer_id == first.pubkey)
+        .map(|hop| hop.cln_channel.clone())
+        .unwrap_or_else(|| scid::to_cln(first.short_channel_id));
+    let first_hop = SendOnionFirstHop {
+        id: first.pubkey.to_string(),
+        channel: first_channel,
+        amount_msat: onion.first_hop_amount_msat,
+        delay: onion
+            .first_hop_cltv_expiry
+            .saturating_sub(node.blockheight + 1),
+    };
+
+    let sent = cln::sendonion(
+        state,
+        SendOnionRequest {
+            onion: &created.onion,
+            first_hop,
+            payment_hash: &invoice.payment_hash,
+            shared_secrets: &created.shared_secrets,
+            amount_msat,
+            destination: invoice.destination.as_deref(),
+            invstring: Some(&request.invoice),
+            label: request.label.as_deref(),
+        },
+    )
+    .await?;
+
+    match cln::waitsendpay(state, &invoice.payment_hash, sent.groupid).await? {
+        WaitSendPay::Complete(status) => {
+            ctx.payment_succeeded(&path);
+            let response = BarqPayResponse {
+                status: status.status.clone(),
+                strategy: strategy_name(kind).to_owned(),
+                invoice_type: match invoice.kind {
+                    InvoiceKind::Bolt11 => "bolt11".to_owned(),
+                    InvoiceKind::Bolt12 => "bolt12".to_owned(),
+                },
+                payment_hash: invoice.payment_hash.clone(),
+                payment_preimage: status.payment_preimage.clone(),
+                destination: invoice.destination.clone(),
+                amount_msat,
+                amount_sent_msat: status
+                    .amount_sent_msat
+                    .unwrap_or(onion.first_hop_amount_msat),
+                fee_msat: onion.first_hop_amount_msat.saturating_sub(amount_msat),
+                route: describe_path(&path),
+                blinded_hops: path.blinded_tail.as_ref().map_or(0, |t| t.hops.len()),
+                response: status,
+            };
+            Ok(json::to_value(response)?)
+        }
+        WaitSendPay::Failed { failure, error } => {
+            log::warn!(
+                "payment {} failed: {} ({:?})",
+                invoice.payment_hash,
+                error.message,
+                failure
+            );
+            let point = failure
+                .erring_index
+                .and_then(|index| locate_failure(&path, index));
+            if let Some(point) = &point {
+                log::info!("payment {} failed at {:?}", invoice.payment_hash, point);
+                if let Some(scid) = point.penalised_channel() {
+                    ctx.payment_failed(&path, scid);
+                }
+            }
+            let (code, data) = enrich_failure(error.code, error.data, point.as_ref());
+            Err(PluginError::new(code, &error.message, data))
+        }
+    }
+}
+
+/// `waitsendpay` error code for a failure along the route.
+const PAY_TRY_OTHER_ROUTE: i32 = 204;
+/// `waitsendpay` error code for a permanent failure at the destination.
+const PAY_DESTINATION_PERM_FAIL: i32 = 203;
+
+/// Fill in what Core Lightning cannot know after `sendonion`: the failing
+/// node and channel, and whether the destination itself rejected the
+/// payment (reported as 203 instead of 204, like `sendpay` does).
+fn enrich_failure(
+    code: i32,
+    data: Option<json::Value>,
+    point: Option<&FailurePoint>,
+) -> (i32, Option<json::Value>) {
+    let Some(point) = point else {
+        return (code, data);
+    };
+    let mut data = data.unwrap_or_else(|| json::json!({}));
+    if let Some(obj) = data.as_object_mut() {
+        if let Some(node) = point.node {
+            obj.entry("erring_node")
+                .or_insert_with(|| json::Value::String(node.to_string()));
+        }
+        if let Some(channel) = point.channel {
+            obj.entry("erring_channel")
+                .or_insert_with(|| json::Value::String(scid::to_cln(channel)));
+        }
+        obj.insert(
+            "erring_in_blinded_path".to_owned(),
+            json::Value::Bool(point.in_blinded_path),
+        );
+    }
+    let code = if code == PAY_TRY_OTHER_ROUTE && point.at_recipient && !point.in_blinded_path {
+        PAY_DESTINATION_PERM_FAIL
+    } else {
+        code
+    };
+    (code, Some(data))
 }

@@ -6,10 +6,10 @@ authors = ["Vincenzo Palazzo <vincenzopalazzodev@gmail.com>"]
 readme = "README.md"
 
 [tool.poetry.dependencies]
-python = ">=3.8,<4.0"
+python = ">=3.10,<4.0"
 pytest = "*"
-pyln-client = "^24.5"
-pyln-testing = "^24.5"
+pyln-client = "^26.6"
+pyln-testing = "^26.6"
 websockets = "*"
 
 [build-system]

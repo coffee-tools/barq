@@ -13,7 +13,8 @@ fmt:
 check:
 	$(CC) build
 	$(CC) test --all
-	cd tests; poetry run pytest . -s -x
+	# RUST=0: our lightningd is built without Rust, so pyln must not pass --grpc-port.
+	cd tests; RUST=0 poetry run pytest . -s -x
 
 clean:
 	$(CC) clean

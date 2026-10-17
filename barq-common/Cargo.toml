@@ -9,15 +9,17 @@ edition = "2021"
 serde = { workspace = true }
 anyhow = { workspace = true }
 log = "0.4"
-hex = "*"
+hex = "0.4"
 
-# Dependencies to visualize the graph
-petgraph = "0.6"
-
-# Dependencies to use LDK routing strategy
+# LDK (re-exported through lampo-common) used for routing, scoring and
+# gossip handling.
 lampo-common = { git = "https://github.com/vincenzopalazzo/lampo.rs.git" }
-# FIXME: put this under a feature flag
-clightningrpc_gossip_map = { version = "0.0.1-beta.5" }
-# FIXME: put this under another feature flag
 lightning-rapid-gossip-sync = "0.0.123"
-reqwest = { version = "0.12", features = ["blocking", "json"] }
+reqwest = "0.12"
+tokio = { version = "1", features = ["rt", "sync", "time", "macros"] }
+
+# Core Lightning gossip_store reader, same cln4rust revision as barq-plugin.
+clightningrpc_gossip_map = { git = "https://github.com/laanwj/cln4rust.git", rev = "bf27af90a8d5e6551816aaa130472eff62354988" }
+
+[dev-dependencies]
+tokio = { version = "1", features = ["rt-multi-thread", "macros"] }
