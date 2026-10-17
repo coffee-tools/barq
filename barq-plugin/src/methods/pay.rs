@@ -12,6 +12,7 @@ use clightningrpc_plugin::plugin::Plugin;
 
 use barq_common::algorithms::direct::Direct;
 use barq_common::algorithms::probabilistic::LDKRoutingStrategy;
+use barq_common::history::PaymentRecord;
 use barq_common::ldk::routing::router::Path;
 use barq_common::network::NetworkContext;
 use barq_common::onion::{build_onion_hops, locate_failure, FailurePoint, RecipientFields};
@@ -57,44 +58,24 @@ impl BarqPayRequest {
     }
 }
 
-/// One hop of the route, in Core Lightning terms.
-#[derive(Debug, Clone, Deserialize, Serialize)]
-pub struct RouteHopJson {
-    pub id: String,
-    pub channel: String,
-    pub fee_msat: u64,
-    pub cltv_expiry_delta: u32,
-}
+pub use barq_common::history::{AttemptRecord as AttemptJson, HopRecord as RouteHopJson};
 
-/// One route barq tried.
-#[derive(Debug, Clone, Deserialize, Serialize)]
-pub struct AttemptJson {
-    pub strategy: String,
-    pub route: Vec<RouteHopJson>,
-    pub fee_msat: u64,
-    pub status: String,
-    #[serde(skip_serializing_if = "Option::is_none")]
-    pub error: Option<String>,
-    #[serde(skip_serializing_if = "Option::is_none")]
-    pub erring_channel: Option<String>,
-}
-
-impl AttemptJson {
-    fn new(candidate: &Candidate, status: &str) -> Self {
-        Self {
-            strategy: candidate.strategy.clone(),
-            route: describe_path(&candidate.output.path),
-            fee_msat: candidate.fee_msat(),
-            status: status.to_owned(),
-            error: None,
-            erring_channel: None,
-        }
+fn attempt_of(candidate: &Candidate, status: &str) -> AttemptJson {
+    AttemptJson {
+        strategy: candidate.strategy.clone(),
+        route: describe_path(&candidate.output.path),
+        fee_msat: candidate.fee_msat(),
+        status: status.to_owned(),
+        error: None,
+        erring_channel: None,
     }
 }
 
 /// Response payload for Barq pay RPC method
 #[derive(Deserialize, Serialize)]
 pub struct BarqPayResponse {
+    /// The payment's id in barq's history (`barqinspect id=...`).
+    pub id: u64,
     pub status: String,
     /// The strategy whose route completed the payment.
     pub strategy: String,
@@ -185,10 +166,87 @@ async fn pay(state: State, request: BarqPayRequest) -> Result<json::Value, Plugi
         ));
     }
 
+    // From here on the payment is recorded in barq's history, whatever
+    // the outcome.
+    let store = state.store()?;
+    let invoice_type = match invoice.kind {
+        InvoiceKind::Bolt11 => "bolt11",
+        InvoiceKind::Bolt12 => "bolt12",
+    };
+    let mut record = PaymentRecord::new(
+        &invoice.payment_hash,
+        &request.invoice,
+        invoice_type,
+        invoice.destination.clone(),
+        amount_msat,
+        request.label.clone(),
+    );
+    store
+        .create(&mut record)
+        .map_err(|err| error!("cannot record the payment: {err:#}"))?;
+    record.event(
+        log::Level::Info,
+        format!(
+            "paying {amount_msat} msat to {} ({invoice_type} invoice {})",
+            invoice.destination.as_deref().unwrap_or("a blinded path"),
+            invoice.payment_hash
+        ),
+    );
+
+    let result = attempt_payment(
+        state,
+        &ctx,
+        &request,
+        &invoice,
+        &node,
+        amount_msat,
+        &mut record,
+    )
+    .await;
+    let result = match result {
+        Ok(mut response) => {
+            response["id"] = json::json!(record.id);
+            Ok(response)
+        }
+        Err(err) => {
+            let mut value = json::to_value(&err).unwrap_or_default();
+            let code = value["code"].as_i64().unwrap_or(-1) as i32;
+            let message = value["message"].as_str().unwrap_or_default().to_owned();
+            record.fail(code, &message);
+            record.event(log::Level::Warn, format!("payment failed: {message}"));
+            let mut data = value["data"].take();
+            if !data.is_object() {
+                data = json::json!({});
+            }
+            data["id"] = json::json!(record.id);
+            Err(PluginError::new(code, &message, Some(data)))
+        }
+    };
+    if let Err(err) = store.save(&record) {
+        log::warn!("cannot save payment record {}: {err:#}", record.id);
+    }
+    result
+}
+
+/// Rank the routes, try them in order, and fall back on failure.
+async fn attempt_payment(
+    state: &State,
+    ctx: &Arc<NetworkContext>,
+    request: &BarqPayRequest,
+    invoice: &DecodedInvoice,
+    node: &NodeContext,
+    amount_msat: u64,
+    record: &mut PaymentRecord,
+) -> Result<json::Value, PluginError> {
     if request.use_rapid_gossip_sync {
-        ctx.sync_rapid_gossip()
+        let timestamp = ctx
+            .sync_rapid_gossip()
             .await
             .map_err(|err| error!("rapid gossip sync failed: {err}"))?;
+        record.event(
+            log::Level::Info,
+            format!("rapid gossip sync applied, timestamp {timestamp}"),
+        );
     }
 
     if node.first_hops.is_empty() {
@@ -199,15 +257,14 @@ async fn pay(state: State, request: BarqPayRequest) -> Result<json::Value, Plugi
     let max_attempts = request.max_attempts.unwrap_or(state.max_attempts).max(1);
     let payment = Payment {
         state,
-        ctx: &ctx,
-        request: &request,
-        invoice: &invoice,
-        node: &node,
+        ctx,
+        request,
+        invoice,
+        node,
         amount_msat,
     };
 
     let mut excluded: Vec<u64> = vec![];
-    let mut attempts: Vec<AttemptJson> = vec![];
     let mut last_failure: Option<Failure> = None;
 
     for attempt in 1..=max_attempts {
@@ -223,27 +280,39 @@ async fn pay(state: State, request: BarqPayRequest) -> Result<json::Value, Plugi
         };
         let ranking = context::rank(state, &input)?;
         for rejected in &ranking.rejected {
-            log::debug!(
-                "attempt {attempt}: strategy `{}` has no route: {}",
-                rejected.strategy,
-                rejected.reason
+            record.event(
+                log::Level::Debug,
+                format!(
+                    "attempt {attempt}: strategy `{}` has no route: {}",
+                    rejected.strategy, rejected.reason
+                ),
             );
         }
         let Some(best) = ranking.best().cloned() else {
             if let Some(failure) = last_failure {
                 // The previous attempt failed and no other route is left.
-                return Err(failure.into_error(&attempts));
+                record.event(log::Level::Info, "no other route left");
+                return Err(failure.into_error(&record.attempts));
             }
             return Err(error!(
                 "No route found to pay the invoice: {}",
                 ranking.explain()
             ));
         };
-        log::info!(
-            "attempt {attempt}/{max_attempts}: `{}` route, {} msat fee, {} candidate(s)",
-            best.strategy,
-            best.fee_msat(),
-            ranking.candidates.len()
+        record.event(
+            log::Level::Info,
+            format!(
+                "attempt {attempt}/{max_attempts}: `{}` route through {} ({} hop(s)), {} msat fee, {} candidate(s)",
+                best.strategy,
+                describe_path(&best.output.path)
+                    .iter()
+                    .map(|h| h.channel.as_str())
+                    .collect::<Vec<_>>()
+                    .join(" -> "),
+                best.output.path.hops.len(),
+                best.fee_msat(),
+                ranking.candidates.len()
+            ),
         );
 
         match payment.send(&best.output.path).await? {
@@ -252,9 +321,16 @@ async fn pay(state: State, request: BarqPayRequest) -> Result<json::Value, Plugi
                 first_hop_amount_msat,
             } => {
                 ctx.payment_succeeded(&best.output.path);
-                attempts.push(AttemptJson::new(&best, "complete"));
+                record.attempts.push(attempt_of(&best, "complete"));
+                let amount_sent_msat = status.amount_sent_msat.unwrap_or(first_hop_amount_msat);
+                record.complete(status.payment_preimage.clone(), amount_sent_msat);
+                record.event(
+                    log::Level::Info,
+                    format!("complete, {amount_sent_msat} msat sent"),
+                );
                 let path = &best.output.path;
                 let response = BarqPayResponse {
+                    id: record.id,
                     status: status.status.clone(),
                     strategy: best.strategy.clone(),
                     invoice_type: match invoice.kind {
@@ -265,33 +341,51 @@ async fn pay(state: State, request: BarqPayRequest) -> Result<json::Value, Plugi
                     payment_preimage: status.payment_preimage.clone(),
                     destination: invoice.destination.clone(),
                     amount_msat,
-                    amount_sent_msat: status.amount_sent_msat.unwrap_or(first_hop_amount_msat),
+                    amount_sent_msat,
                     fee_msat: first_hop_amount_msat.saturating_sub(amount_msat),
                     route: describe_path(path),
                     blinded_hops: path.blinded_tail.as_ref().map_or(0, |t| t.hops.len()),
-                    attempts,
+                    attempts: record.attempts.clone(),
                     response: status,
                 };
                 return Ok(json::to_value(response)?);
             }
             Outcome::Failed(failure) => {
-                let mut tried = AttemptJson::new(&best, "failed");
+                let mut tried = attempt_of(&best, "failed");
                 tried.error = Some(failure.message.clone());
                 tried.erring_channel = failure.retry_channel.map(scid::to_cln);
-                attempts.push(tried);
+                record.attempts.push(tried);
                 let Some(channel) = failure.retry_channel else {
                     // The destination (or its blinded path) failed the
                     // payment: another route will not help.
-                    return Err(failure.into_error(&attempts));
+                    record.event(
+                        log::Level::Warn,
+                        format!(
+                            "attempt {attempt} failed at the destination: {}",
+                            failure.message
+                        ),
+                    );
+                    return Err(failure.into_error(&record.attempts));
                 };
+                record.event(
+                    log::Level::Warn,
+                    format!(
+                        "attempt {attempt} failed: {}; excluding channel {}",
+                        failure.message,
+                        scid::to_cln(channel)
+                    ),
+                );
                 excluded.push(channel);
                 last_failure = Some(failure);
             }
         }
     }
     let failure = last_failure.expect("at least one attempt ran");
-    log::warn!("giving up after {max_attempts} attempt(s)");
-    Err(failure.into_error(&attempts))
+    record.event(
+        log::Level::Warn,
+        format!("giving up after {max_attempts} attempt(s)"),
+    );
+    Err(failure.into_error(&record.attempts))
 }
 
 /// Everything needed to send one route.
