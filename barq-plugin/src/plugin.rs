@@ -17,6 +17,7 @@ use clightningrpc_plugin::errors::PluginError;
 use clightningrpc_plugin::plugin::Plugin;
 use clightningrpc_plugin_macros::{plugin, rpc_method};
 
+use barq_common::history::PaymentStore;
 use barq_common::network::{default_rgs_url, NetworkContext};
 use barq_common::simulation::GraphSpec;
 use barq_common::Network;
@@ -47,6 +48,8 @@ pub(crate) struct State {
     pub(crate) runtime: Arc<Runtime>,
     /// Default number of routes `barqpay` tries.
     pub(crate) max_attempts: u32,
+    /// The payment history.
+    pub(crate) store: Option<Arc<PaymentStore>>,
 }
 
 impl State {
@@ -65,12 +68,19 @@ impl State {
                     .expect("building the tokio runtime"),
             ),
             max_attempts: 3,
+            store: None,
         }
     }
 
     /// Drive `future` to completion from a synchronous cln4rust handler.
     pub fn block_on<F: std::future::Future>(&self, future: F) -> F::Output {
         self.runtime.block_on(future)
+    }
+
+    pub fn store(&self) -> Result<Arc<PaymentStore>, PluginError> {
+        self.store
+            .clone()
+            .ok_or_else(|| PluginError::new(-1, "barq is not initialized yet", None))
     }
 
     pub fn ctx(&self) -> Result<Arc<NetworkContext>, PluginError> {
@@ -120,6 +130,7 @@ pub fn build_plugin() -> anyhow::Result<Plugin<State>> {
             barq_pay,
             barq_route_info,
             barq_sync_gossip,
+            barq_inspect,
         ],
         hooks: [],
     };
@@ -216,6 +227,12 @@ fn on_init(plugin: &mut Plugin<State>) -> Value {
         None
     };
     let data_dir = lightning_dir.join("barq");
+    match PaymentStore::open(data_dir.join("payments")) {
+        Ok(store) => plugin.state.store = Some(Arc::new(store)),
+        Err(err) => {
+            return serde_json::json!({ "disable": format!("cannot open the payment history: {err:#}") })
+        }
+    }
     let ctx = match NetworkContext::new(network, data_dir, gossip_store.clone(), rgs_url.clone()) {
         Ok(ctx) => ctx,
         Err(err) => {
@@ -293,4 +310,12 @@ pub(crate) fn exit_plugin(state: &State, reason: &str) -> ! {
         }
     }
     std::process::exit(0)
+}
+
+#[rpc_method(
+    rpc_name = "barqinspect",
+    description = "Inspect a past barq payment by id or payment_hash, or list recent ones"
+)]
+fn barq_inspect(plugin: &mut Plugin<State>, request: Value) -> Result<Value, PluginError> {
+    methods::inspect::barq_inspect(plugin, request)
 }
