@@ -161,6 +161,19 @@ Compute a route without paying: `dest_pubkey`, `amount_msat`, optional
 best route and every ranked `candidate` (in the order `barqpay` would try
 them), plus the strategies that had no route and why (`rejected`).
 
+## `barqinspect`
+
+Look at past payments. Every `barqpay` call is recorded, and its `id` is in
+the response (and in the error data when it fails).
+
+- `barqinspect id=N` returns one payment: invoice, amounts, fee, status,
+  preimage, every attempted route with its outcome, and a journal of what
+  barq did.
+- `barqinspect payment_hash=H` returns every payment to that hash.
+- `barqinspect` lists the most recent payments (`limit`, default 20).
+
+See [docs/persistence.md](docs/persistence.md) for what is stored and why.
+
 ## `barqsyncgossip`
 
 Refresh the LDK graph from every configured source right now and report

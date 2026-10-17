@@ -4,6 +4,7 @@
 //! Lightning.
 pub mod algorithms;
 pub mod gossip_store;
+pub mod history;
 pub mod network;
 pub mod onion;
 pub mod scid;
