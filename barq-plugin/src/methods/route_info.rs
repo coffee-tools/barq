@@ -12,8 +12,8 @@ use clightningrpc_plugin::plugin::Plugin;
 use barq_common::secp256k1::PublicKey;
 use barq_common::strategy::{Payee, RouteInput, StrategyKind};
 
-use crate::methods::cln;
-use crate::methods::pay::{build_strategy, describe_path, strategy_name, RouteHopJson};
+use crate::methods::context;
+use crate::methods::pay::{describe_path, strategy_name, RouteHopJson};
 use crate::plugin::State;
 
 /// Request payload for Barq route info RPC method
@@ -57,26 +57,13 @@ pub fn barq_route_info(plugin: &mut Plugin<State>, request: Value) -> Result<Val
 
 async fn route_info(state: State, request: BarqRouteInfoRequest) -> Result<Value, PluginError> {
     let state = &state;
-    let ctx = state.ctx()?;
-
     let dest = PublicKey::from_str(&request.dest_pubkey)
         .map_err(|_| error!("Invalid dest_pubkey `{}`", request.dest_pubkey))?;
-    let gossip_store = async {
-        if ctx.gossip_store_path().is_some() {
-            if let Err(err) = ctx.sync_gossip_store_async().await {
-                log::warn!("gossip_store sync failed: {err}");
-            }
-        }
-        Ok::<(), PluginError>(())
-    };
-    let (node_info, first_hops, ()) =
-        tokio::try_join!(cln::getinfo(state), cln::first_hops(state), gossip_store)?;
-    let our_id = PublicKey::from_str(&node_info.id).map_err(|_| error!("Invalid node id"))?;
+    let node = context::load(state).await?;
 
     let kind = request.strategy().map_err(|e| error!("{e}"))?;
-    let strategy = build_strategy(state, kind)?;
     let input = RouteInput {
-        src_pubkey: our_id,
+        src_pubkey: node.our_id,
         payee: Payee::Clear {
             node_id: dest,
             route_hints: vec![],
@@ -84,16 +71,10 @@ async fn route_info(state: State, request: BarqRouteInfoRequest) -> Result<Value
         },
         amount_msat: request.amount_msat,
         final_cltv_delta: request.cltv.unwrap_or(18),
-        first_hops,
+        first_hops: node.first_hops,
         expiry_time: None,
     };
-    if !strategy.can_apply(&input).map_err(|e| error!("{e}"))? {
-        return Err(error!(
-            "Strategy `{}` cannot route to `{dest}`",
-            strategy_name(kind)
-        ));
-    }
-    let output = strategy.route(&input).map_err(|err| error!("{err}"))?;
+    let output = context::route_with(state, kind, &input)?;
     let response = BarqRouteInfoResponse {
         strategy: strategy_name(kind).to_owned(),
         amount_msat: request.amount_msat,

@@ -13,13 +13,13 @@ use barq_common::algorithms::direct::Direct;
 use barq_common::algorithms::probabilistic::LDKRoutingStrategy;
 use barq_common::ldk::routing::router::Path;
 use barq_common::onion::{build_onion_hops, locate_failure, FailurePoint, RecipientFields};
-use barq_common::secp256k1::PublicKey;
+use barq_common::scid;
 use barq_common::strategy::{RouteInput, Strategy, StrategyKind};
-use barq_common::{scid, Network};
 
 use crate::methods::cln::{
     self, OnionHopJson, SendOnionFirstHop, SendOnionRequest, SendPayStatus, WaitSendPay,
 };
+use crate::methods::context;
 use crate::methods::invoice::{self, InvoiceKind};
 use crate::plugin::State;
 
@@ -124,31 +124,16 @@ async fn pay(state: State, request: BarqPayRequest) -> Result<json::Value, Plugi
     let state = &state;
     let ctx = state.ctx()?;
 
-    // These are independent: decode the invoice, ask for our node info and
-    // channels, and catch up with the gossip Core Lightning received since
-    // the last background sync, all at the same time.
-    let gossip_store = async {
-        if ctx.gossip_store_path().is_some() {
-            match ctx.sync_gossip_store_async().await {
-                Ok(stats) => log::debug!("gossip_store sync before routing: {stats:?}"),
-                Err(err) => log::warn!("gossip_store sync failed: {err}"),
-            }
-        }
-        Ok::<(), PluginError>(())
-    };
-    let (invoice, node_info, first_hops, ()) = tokio::try_join!(
+    // Decode the invoice while loading our node, channels and gossip.
+    let (invoice, node) = tokio::try_join!(
         invoice::decode(state, &request.invoice),
-        cln::getinfo(state),
-        cln::first_hops(state),
-        gossip_store,
+        context::load(state)
     )?;
-
-    let our_id = PublicKey::from_str(&node_info.id).map_err(|_| error!("Invalid node id"))?;
-    let node_network = Network::from_str(&node_info.network).map_err(|e| error!("{e}"))?;
     if let Some(invoice_network) = invoice.network {
-        if invoice_network != node_network {
+        if invoice_network != node.network {
             return Err(error!(
-                "Invoice network ({invoice_network}) does not match node network ({node_network})"
+                "Invoice network ({invoice_network}) does not match node network ({})",
+                node.network
             ));
         }
     }
@@ -178,31 +163,20 @@ async fn pay(state: State, request: BarqPayRequest) -> Result<json::Value, Plugi
             .map_err(|err| error!("rapid gossip sync failed: {err}"))?;
     }
 
-    if first_hops.is_empty() {
+    if node.first_hops.is_empty() {
         return Err(error!("No usable channel to pay from"));
     }
 
     let kind = request.strategy().map_err(|e| error!("{e}"))?;
-    let strategy = build_strategy(state, kind)?;
     let input = RouteInput {
-        src_pubkey: our_id,
+        src_pubkey: node.our_id,
         payee: invoice.payee.clone(),
         amount_msat,
         final_cltv_delta: invoice.final_cltv_delta,
-        first_hops,
+        first_hops: node.first_hops.clone(),
         expiry_time: invoice.expiry_time,
     };
-    if !strategy.can_apply(&input).map_err(|e| error!("{e}"))? {
-        return Err(error!(
-            "Strategy `{}` cannot pay this invoice",
-            strategy_name(kind)
-        ));
-    }
-    let output = strategy.route(&input).map_err(|err| error!("{err}"))?;
-    let path = output.path;
-    if path.hops.is_empty() {
-        return Err(error!("No route found to pay the invoice"));
-    }
+    let path = context::route_with(state, kind, &input)?.path;
     log::info!("path selected by `{}`: {:?}", strategy_name(kind), path);
 
     // Core Lightning computes CLTVs relative to the next block.
@@ -213,7 +187,7 @@ async fn pay(state: State, request: BarqPayRequest) -> Result<json::Value, Plugi
             payment_secret: invoice.payment_secret,
             payment_metadata: invoice.payment_metadata.clone(),
         },
-        node_info.blockheight + 1,
+        node.blockheight + 1,
     )
     .map_err(|err| error!("cannot build the onion: {err}"))?;
 
@@ -240,7 +214,7 @@ async fn pay(state: State, request: BarqPayRequest) -> Result<json::Value, Plugi
         amount_msat: onion.first_hop_amount_msat,
         delay: onion
             .first_hop_cltv_expiry
-            .saturating_sub(node_info.blockheight + 1),
+            .saturating_sub(node.blockheight + 1),
     };
 
     let sent = cln::sendonion(
