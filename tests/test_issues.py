@@ -98,3 +98,14 @@ def test_issue_21_graph_is_loaded_once_and_persisted(node_factory):
     # Logged during init, before the "Server started" line pyln waits for.
     assert l1.daemon.is_in_log("loaded network graph from")
     wait_for(lambda: l1.rpc.call("barqsyncgossip", {})["channels"] >= 2)
+
+
+def test_long_lightning_dir_path_can_pay_with_a_very_long_test_name_to_exceed_sun_len(node_factory):
+    """The RPC socket is reached by its relative name from the lightning-dir,
+    so a lightning-dir deeper than the ~104 byte Unix socket limit works.
+    pyln names the directory after the test, hence the long test name."""
+    l1, l2 = node_factory.line_graph(2, opts=[dict(opts), dict(opts)], wait_for_announce=True)
+    rpc_path = os.path.join(l1.daemon.lightning_dir, "regtest", "lightning-rpc")
+    assert len(rpc_path) > 104, rpc_path
+    inv = l2.rpc.invoice(10_000, "long-path", "long path")["bolt11"]
+    assert l1.rpc.call("barqpay", {"invoice": inv})["status"] == "complete"
