@@ -29,7 +29,7 @@ use lampo_common::ldk::util::ser::{ReadableArgs, Writeable};
 use lampo_common::utils::logger::LampoLogger;
 use lightning_rapid_gossip_sync::RapidGossipSync;
 
-use crate::gossip_store::{GossipStoreReader, GossipStoreStats};
+use crate::gossip_store::{self, GossipStoreReader, GossipStoreStats};
 
 pub type Logger = Arc<LampoLogger>;
 pub type Graph = LdkNetworkGraph<Logger>;
@@ -224,7 +224,7 @@ impl NetworkContext {
         let Some(reader) = guard.as_mut() else {
             anyhow::bail!("No gossip store configured");
         };
-        reader.sync(&self.graph)
+        gossip_store::sync(reader, &self.graph)
     }
 
     pub async fn sync_gossip_store_async(self: &Arc<Self>) -> Result<GossipStoreStats> {
