@@ -95,7 +95,7 @@ def test_pay_direct_strategy(node_factory):
     assert only_one(l2.rpc.listinvoices('direct')['invoices'])['status'] == 'paid'
 
     inv = l3.rpc.invoice(Millisatoshi("10sat"), 'direct', 'description')['bolt11']
-    with pytest.raises(RpcError, match="cannot pay this invoice"):
+    with pytest.raises(RpcError, match="cannot route this payment"):
         l1.rpc.call("barqpay", {"invoice": inv, "strategy": "direct"})
 
 
