@@ -61,14 +61,13 @@ name = "barq-common"
 version = "0.0.1"
 dependencies = [
  "anyhow",
- "clightningrpc_gossip_map",
  "hex",
  "lampo-common",
  "lightning-rapid-gossip-sync",
  "log",
- "petgraph",
  "reqwest",
  "serde",
+ "tokio",
 ]
 
 [[package]]
@@ -78,13 +77,14 @@ dependencies = [
  "anyhow",
  "barq-common",
  "clightningrpc",
- "clightningrpc-common 0.3.0-beta.4 (git+https://github.com/laanwj/cln4rust.git)",
- "clightningrpc-plugin 0.3.0-beta.8 (git+https://github.com/laanwj/cln4rust.git)",
+ "clightningrpc-common 0.3.0-beta.4 (git+https://github.com/laanwj/cln4rust.git?rev=586f4f454ddc196bb09b7b4a6f56a618a73f6a87)",
+ "clightningrpc-plugin",
  "clightningrpc-plugin-macros",
- "clightningrpc_gossip_map",
+ "hex",
  "log",
  "serde",
  "serde_json",
+ "tokio",
 ]
 
 [[package]]
@@ -142,12 +142,6 @@ source = "registry+https://github.com/rust-lang/crates.io-index"
 checksum = "79296716171880943b8470b5f8d03aa55eb2e645a4874bdbb28adb49162e012c"
 
 [[package]]
-name = "byteorder"
-version = "1.5.0"
-source = "registry+https://github.com/rust-lang/crates.io-index"
-checksum = "1fd0f2584146f6f2ef48085050886acf353beff7305ebd1ae69500e27c67f64b"
-
-[[package]]
 name = "bytes"
 version = "1.8.0"
 source = "registry+https://github.com/rust-lang/crates.io-index"
@@ -180,9 +174,9 @@ dependencies = [
 [[package]]
 name = "clightningrpc"
 version = "0.3.0-beta.8"
-source = "git+https://github.com/laanwj/cln4rust.git#a20c7a2729b0d5e70aee46b97dcaaa297c88334a"
+source = "git+https://github.com/laanwj/cln4rust.git?rev=586f4f454ddc196bb09b7b4a6f56a618a73f6a87#586f4f454ddc196bb09b7b4a6f56a618a73f6a87"
 dependencies = [
- "clightningrpc-common 0.3.0-beta.4 (registry+https://github.com/rust-lang/crates.io-index)",
+ "clightningrpc-common 0.3.0-beta.4 (git+https://github.com/laanwj/cln4rust.git?rev=586f4f454ddc196bb09b7b4a6f56a618a73f6a87)",
  "serde",
  "serde_json",
 ]
@@ -200,10 +194,11 @@ dependencies = [
 [[package]]
 name = "clightningrpc-common"
 version = "0.3.0-beta.4"
-source = "git+https://github.com/laanwj/cln4rust.git#a20c7a2729b0d5e70aee46b97dcaaa297c88334a"
+source = "git+https://github.com/laanwj/cln4rust.git?rev=586f4f454ddc196bb09b7b4a6f56a618a73f6a87#586f4f454ddc196bb09b7b4a6f56a618a73f6a87"
 dependencies = [
  "serde",
  "serde_json",
+ "tokio",
 ]
 
 [[package]]
@@ -218,18 +213,7 @@ dependencies = [
 [[package]]
 name = "clightningrpc-plugin"
 version = "0.3.0-beta.8"
-source = "registry+https://github.com/rust-lang/crates.io-index"
-checksum = "9807dd1f895fadfc9fe8e9f355cabbccf994d4c7b0e3a921726679faa3e2713d"
-dependencies = [
- "clightningrpc-common 0.3.0-beta.4 (registry+https://github.com/rust-lang/crates.io-index)",
- "serde",
- "serde_json",
-]
-
-[[package]]
-name = "clightningrpc-plugin"
-version = "0.3.0-beta.8"
-source = "git+https://github.com/laanwj/cln4rust.git#a20c7a2729b0d5e70aee46b97dcaaa297c88334a"
+source = "git+https://github.com/laanwj/cln4rust.git?rev=586f4f454ddc196bb09b7b4a6f56a618a73f6a87#586f4f454ddc196bb09b7b4a6f56a618a73f6a87"
 dependencies = [
  "clightningrpc-common 0.3.0-beta.4 (registry+https://github.com/rust-lang/crates.io-index)",
  "serde",
@@ -239,27 +223,12 @@ dependencies = [
 [[package]]
 name = "clightningrpc-plugin-macros"
 version = "0.3.0-beta.4"
-source = "git+https://github.com/laanwj/cln4rust.git#a20c7a2729b0d5e70aee46b97dcaaa297c88334a"
+source = "git+https://github.com/laanwj/cln4rust.git?rev=586f4f454ddc196bb09b7b4a6f56a618a73f6a87#586f4f454ddc196bb09b7b4a6f56a618a73f6a87"
 dependencies = [
- "clightningrpc-plugin 0.3.0-beta.8 (registry+https://github.com/rust-lang/crates.io-index)",
+ "clightningrpc-plugin",
  "convert_case",
  "kproc-parser",
  "serde_json",
-]
-
-[[package]]
-name = "clightningrpc_gossip_map"
-version = "0.0.1-beta.5"
-source = "registry+https://github.com/rust-lang/crates.io-index"
-checksum = "3ced6471107ecda8a5bd084eb5bbb36730d52646f17e0d0fcb7967de58a9ba0e"
-dependencies = [
- "anyhow",
- "bitcoin",
- "byteorder",
- "fundamentals",
- "fundamentals-derive",
- "hex",
- "log",
 ]
 
 [[package]]
@@ -275,9 +244,12 @@ dependencies = [
 
 [[package]]
 name = "convert_case"
-version = "0.5.0"
+version = "0.8.0"
 source = "registry+https://github.com/rust-lang/crates.io-index"
-checksum = "fb4a24b1aaf0fd0ce8b45161144d6f42cd91677fd5940fd431183eb023b3a2b8"
+checksum = "baaaa0ecca5b51987b9423ccdc971514dd8b0bb7b4060b983d3664dad3f1f89f"
+dependencies = [
+ "unicode-segmentation",
+]
 
 [[package]]
 name = "core-foundation"
@@ -353,12 +325,6 @@ source = "registry+https://github.com/rust-lang/crates.io-index"
 checksum = "e8c02a5121d4ea3eb16a80748c74f5549a5665e4c21333c6098f283870fbdea6"
 
 [[package]]
-name = "fixedbitset"
-version = "0.4.2"
-source = "registry+https://github.com/rust-lang/crates.io-index"
-checksum = "0ce7134b9999ecaf8bcd65542e436736ef32ddca1b3e06094cb6ec5755203b80"
-
-[[package]]
 name = "fnv"
 version = "1.0.7"
 source = "registry+https://github.com/rust-lang/crates.io-index"
@@ -389,31 +355,12 @@ dependencies = [
 ]
 
 [[package]]
-name = "fundamentals"
-version = "0.0.1-alpha.4"
-source = "registry+https://github.com/rust-lang/crates.io-index"
-checksum = "664dcd7fdedb3f45dd2283d17be4cb0c158c26002e7c6987ea969950ac60264f"
-dependencies = [
- "fundamentals-derive",
-]
-
-[[package]]
-name = "fundamentals-derive"
-version = "0.0.1-alpha.2"
-source = "registry+https://github.com/rust-lang/crates.io-index"
-checksum = "f4ade3dbe6dfe670f59595864aef67541f51921d282bfc35865e4fe1a47dac1e"
-dependencies = [
- "kproc-parser",
-]
-
-[[package]]
 name = "futures-channel"
 version = "0.3.31"
 source = "registry+https://github.com/rust-lang/crates.io-index"
 checksum = "2dff15bf788c671c1934e366d07e30c1814a8ef514e1af724a602e8a2fbe1b10"
 dependencies = [
  "futures-core",
- "futures-sink",
 ]
 
 [[package]]
@@ -421,12 +368,6 @@ name = "futures-core"
 version = "0.3.31"
 source = "registry+https://github.com/rust-lang/crates.io-index"
 checksum = "05f29059c0c2090612e8d742178b0580d2dc940c837851ad723096f87af6663e"
-
-[[package]]
-name = "futures-io"
-version = "0.3.31"
-source = "registry+https://github.com/rust-lang/crates.io-index"
-checksum = "9e5c1b78ca4aae1ac06c48a526a655760685149f0d465d21f37abfe57ce075c6"
 
 [[package]]
 name = "futures-sink"
@@ -447,13 +388,9 @@ source = "registry+https://github.com/rust-lang/crates.io-index"
 checksum = "9fa08315bb612088cc391249efdc3bc77536f16c91f6cf495e6fbe85b20a4a81"
 dependencies = [
  "futures-core",
- "futures-io",
- "futures-sink",
  "futures-task",
- "memchr",
  "pin-project-lite",
  "pin-utils",
- "slab",
 ]
 
 [[package]]
@@ -842,9 +779,6 @@ name = "kproc-parser"
 version = "0.0.1-beta.7"
 source = "registry+https://github.com/rust-lang/crates.io-index"
 checksum = "a4a3c5d81e3af35bb269378a933889f7f45c884bdf820a9c268711035430f3f7"
-dependencies = [
- "proc-macro2",
-]
 
 [[package]]
 name = "lampo-common"
@@ -1101,16 +1035,6 @@ source = "registry+https://github.com/rust-lang/crates.io-index"
 checksum = "e3148f5046208a5d56bcfc03053e3ca6334e51da8dfb19b6cdc8b306fae3283e"
 
 [[package]]
-name = "petgraph"
-version = "0.6.5"
-source = "registry+https://github.com/rust-lang/crates.io-index"
-checksum = "b4c5cc86750666a3ed20bdaf5ca2a0344f9c67674cae0515bec2da16fbaa47db"
-dependencies = [
- "fixedbitset",
- "indexmap 2.6.0",
-]
-
-[[package]]
 name = "pin-project-lite"
 version = "0.2.15"
 source = "registry+https://github.com/rust-lang/crates.io-index"
@@ -1155,7 +1079,6 @@ dependencies = [
  "base64",
  "bytes",
  "encoding_rs",
- "futures-channel",
  "futures-core",
  "futures-util",
  "h2",
@@ -1501,7 +1424,19 @@ dependencies = [
  "mio",
  "pin-project-lite",
  "socket2",
+ "tokio-macros",
  "windows-sys 0.52.0",
+]
+
+[[package]]
+name = "tokio-macros"
+version = "2.4.0"
+source = "registry+https://github.com/rust-lang/crates.io-index"
+checksum = "693d596312e88961bc67d7f1f97af8a70227d9f90c31bba5806eec004978d752"
+dependencies = [
+ "proc-macro2",
+ "quote",
+ "syn",
 ]
 
 [[package]]
@@ -1574,6 +1509,12 @@ name = "unicode-ident"
 version = "1.0.13"
 source = "registry+https://github.com/rust-lang/crates.io-index"
 checksum = "e91b56cd4cadaeb79bbf1a5645f6b4f8dc5bde8834ad5894a8db35fda9efa1fe"
+
+[[package]]
+name = "unicode-segmentation"
+version = "1.13.3"
+source = "registry+https://github.com/rust-lang/crates.io-index"
+checksum = "c6f5d3c3b1bf09027a88a6bc961fc00497d651009560b5463668dc81b0fa87a8"
 
 [[package]]
 name = "untrusted"

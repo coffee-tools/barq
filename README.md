@@ -2,6 +2,8 @@
 
 Barq, ( بَرْق - meaning "lightning" in Arabic), is a Rust plugin for Core Lightning designed to provide a simple and extensible interface for paying invoices on the Lightning Network.
 
+It pays BOLT11 and BOLT12 invoices by finding the path with [LDK](https://lightningdevkit.org) (router and probabilistic scorer) over a network graph fed by LDK rapid gossip sync and the Core Lightning `gossip_store`, and completes the payment with the Core Lightning `createonion`/`sendonion` API.
+
 ## Project Structure
 
 Barq is organized into multiple crates:
@@ -19,7 +21,7 @@ Each strategy follows a common interface, making it easy to add new strategies w
 
 ## User Guide
 
-A user guide for this plugin can be found here: https://github.com/tareknaser/barq/blob/main/USER_GUIDE.md
+A user guide for this plugin can be found here: [USER_GUIDE.md](./USER_GUIDE.md)
 
 ## Integration Testing
 
