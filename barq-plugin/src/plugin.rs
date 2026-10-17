@@ -148,7 +148,20 @@ pub fn build_plugin() -> anyhow::Result<Plugin<State>> {
 fn on_init(plugin: &mut Plugin<State>) -> Value {
     let config = plugin.configuration.clone().unwrap();
     let lightning_dir = PathBuf::from(&config.lightning_dir);
-    let rpc_file = lightning_dir.join(&config.rpc_file);
+    // Unix socket paths are limited to ~104 bytes (SUN_LEN), so a deep
+    // lightning-dir makes the absolute `lightning-rpc` path unusable. Like
+    // Core Lightning's own plugins, work from the lightning-dir and connect
+    // with the relative socket name.
+    let rpc_file = match std::env::set_current_dir(&lightning_dir) {
+        Ok(()) => PathBuf::from(&config.rpc_file),
+        Err(err) => {
+            log::warn!(
+                "cannot change directory to {}: {err}; using the absolute RPC path",
+                lightning_dir.display()
+            );
+            lightning_dir.join(&config.rpc_file)
+        }
+    };
     plugin.state.cln_rpc_path = Some(rpc_file.to_string_lossy().to_string());
 
     let network = match Network::from_str(&config.network) {
