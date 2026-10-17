@@ -18,6 +18,7 @@ use clightningrpc_plugin::plugin::Plugin;
 use clightningrpc_plugin_macros::{plugin, rpc_method};
 
 use barq_common::network::{default_rgs_url, NetworkContext};
+use barq_common::simulation::GraphSpec;
 use barq_common::Network;
 
 use crate::methods;
@@ -26,6 +27,8 @@ use crate::methods;
 pub const OPT_RGS_URL: &str = "barq-rgs-url";
 pub const OPT_SYNC_INTERVAL: &str = "barq-sync-interval";
 pub const OPT_CLN_GOSSIP: &str = "barq-cln-gossip";
+/// Developer option: load a mocked graph (JSON `GraphSpec`) at startup.
+pub const OPT_DEV_SIMULATED_GRAPH: &str = "barq-dev-simulated-graph";
 
 /// Barq Plugin State
 ///
@@ -138,6 +141,14 @@ pub fn build_plugin() -> anyhow::Result<Plugin<State>> {
             Some("true".to_owned()),
             "Feed the LDK graph with the Core Lightning gossip_store.",
             false,
+        )
+        .add_opt(
+            OPT_DEV_SIMULATED_GRAPH,
+            "string",
+            None,
+            "Developer option: path to a JSON graph spec of mocked channels loaded into \
+             the routing graph at startup, for testing strategies on large topologies.",
+            false,
         );
     plugin.register_notification("shutdown", OnShutdown);
     plugin.on_init(on_init);
@@ -203,6 +214,15 @@ fn on_init(plugin: &mut Plugin<State>) -> Value {
             .map(|p| p.display().to_string())
             .unwrap_or_else(|| "disabled".to_owned())
     );
+    if let Some(path) = plugin.get_opt::<String>(OPT_DEV_SIMULATED_GRAPH) {
+        let loaded = GraphSpec::from_file(&path).and_then(|spec| spec.apply(&ctx.graph));
+        match loaded {
+            Ok(count) => log::info!("loaded {count} simulated channels from {path}"),
+            Err(err) => {
+                return serde_json::json!({ "disable": format!("cannot load simulated graph {path}: {err:#}") })
+            }
+        }
+    }
     if interval > 0 {
         ctx.start_background_sync(
             plugin.state.runtime.handle(),

@@ -69,6 +69,27 @@ lightningd --network=regtest --plugin=.../barq-plugin \
   --barq-rgs-url=http://127.0.0.1:8080/snapshot --barq-sync-interval=600
 ```
 
+## Testing strategies on simulated networks
+
+`barq-common` can build LDK graphs of simulated nodes and channels
+(`barq_common::simulation`): lines, grids and seeded random graphs, with a
+fee policy per channel direction. Use it to unit-test a strategy, or to
+benchmark one:
+
+```
+cargo run --release -p barq-common --example routing_bench -- 2000 6000 100
+```
+
+The developer option `barq-dev-simulated-graph=<file.json>` loads a mocked
+graph into the plugin at startup, next to the real one, so integration
+tests can route over topologies much larger than a regtest network. The
+file holds `{"channels": [...]}` where each channel has `node1`, `node2`
+(hex node ids), `capacity_sat`, and optionally `short_channel_id`,
+`policy_1to2` and `policy_2to1` (`fee_base_msat`,
+`fee_proportional_millionths`, `cltv_expiry_delta`, `htlc_minimum_msat`,
+`htlc_maximum_msat`, `disabled`). Payments cannot settle over mocked nodes.
+See `tests/test_simulation.py`.
+
 # Barq commands
 
 `lightning-cli --network=<network-name> -k <barq-command> <param>=<value> ...`
