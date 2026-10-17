@@ -38,6 +38,15 @@ Alternatively, you can run:
 nix develop --command bash -c 'make check'
 ```
 
+To run the integration tests against a specific Core Lightning build, put
+its `bin` directory first in `PATH`. The suite is verified on v25.09 and
+v26.06.9. Set `RUST=0` when that build has no Rust plugins (no `cln-grpc`):
+
+```shell
+cd tests
+RUST=0 PATH=/path/to/cln/bin:$PATH poetry run pytest . -v
+```
+
 ## Contributions
 
 Contributions to Barq are highly appreciated. Please follow the guidelines in [`CONTRIBUTING.md`](./CONTRIBUTING.md) for details on linting, formatting, testing, and commit message conventions.
