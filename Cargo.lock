@@ -61,6 +61,7 @@ name = "barq-common"
 version = "0.0.1"
 dependencies = [
  "anyhow",
+ "clightningrpc_gossip_map",
  "hex",
  "lampo-common",
  "lightning-rapid-gossip-sync",
@@ -77,7 +78,7 @@ dependencies = [
  "anyhow",
  "barq-common",
  "clightningrpc",
- "clightningrpc-common 0.3.0-beta.4 (git+https://github.com/laanwj/cln4rust.git?rev=586f4f454ddc196bb09b7b4a6f56a618a73f6a87)",
+ "clightningrpc-common 0.3.0-beta.4 (git+https://github.com/laanwj/cln4rust.git?rev=bf27af90a8d5e6551816aaa130472eff62354988)",
  "clightningrpc-plugin",
  "clightningrpc-plugin-macros",
  "hex",
@@ -142,6 +143,12 @@ source = "registry+https://github.com/rust-lang/crates.io-index"
 checksum = "79296716171880943b8470b5f8d03aa55eb2e645a4874bdbb28adb49162e012c"
 
 [[package]]
+name = "byteorder"
+version = "1.5.0"
+source = "registry+https://github.com/rust-lang/crates.io-index"
+checksum = "1fd0f2584146f6f2ef48085050886acf353beff7305ebd1ae69500e27c67f64b"
+
+[[package]]
 name = "bytes"
 version = "1.8.0"
 source = "registry+https://github.com/rust-lang/crates.io-index"
@@ -174,9 +181,9 @@ dependencies = [
 [[package]]
 name = "clightningrpc"
 version = "0.3.0-beta.8"
-source = "git+https://github.com/laanwj/cln4rust.git?rev=586f4f454ddc196bb09b7b4a6f56a618a73f6a87#586f4f454ddc196bb09b7b4a6f56a618a73f6a87"
+source = "git+https://github.com/laanwj/cln4rust.git?rev=bf27af90a8d5e6551816aaa130472eff62354988#bf27af90a8d5e6551816aaa130472eff62354988"
 dependencies = [
- "clightningrpc-common 0.3.0-beta.4 (git+https://github.com/laanwj/cln4rust.git?rev=586f4f454ddc196bb09b7b4a6f56a618a73f6a87)",
+ "clightningrpc-common 0.3.0-beta.4 (git+https://github.com/laanwj/cln4rust.git?rev=bf27af90a8d5e6551816aaa130472eff62354988)",
  "serde",
  "serde_json",
 ]
@@ -194,7 +201,7 @@ dependencies = [
 [[package]]
 name = "clightningrpc-common"
 version = "0.3.0-beta.4"
-source = "git+https://github.com/laanwj/cln4rust.git?rev=586f4f454ddc196bb09b7b4a6f56a618a73f6a87#586f4f454ddc196bb09b7b4a6f56a618a73f6a87"
+source = "git+https://github.com/laanwj/cln4rust.git?rev=bf27af90a8d5e6551816aaa130472eff62354988#bf27af90a8d5e6551816aaa130472eff62354988"
 dependencies = [
  "serde",
  "serde_json",
@@ -213,7 +220,7 @@ dependencies = [
 [[package]]
 name = "clightningrpc-plugin"
 version = "0.3.0-beta.8"
-source = "git+https://github.com/laanwj/cln4rust.git?rev=586f4f454ddc196bb09b7b4a6f56a618a73f6a87#586f4f454ddc196bb09b7b4a6f56a618a73f6a87"
+source = "git+https://github.com/laanwj/cln4rust.git?rev=bf27af90a8d5e6551816aaa130472eff62354988#bf27af90a8d5e6551816aaa130472eff62354988"
 dependencies = [
  "clightningrpc-common 0.3.0-beta.4 (registry+https://github.com/rust-lang/crates.io-index)",
  "serde",
@@ -223,12 +230,26 @@ dependencies = [
 [[package]]
 name = "clightningrpc-plugin-macros"
 version = "0.3.0-beta.4"
-source = "git+https://github.com/laanwj/cln4rust.git?rev=586f4f454ddc196bb09b7b4a6f56a618a73f6a87#586f4f454ddc196bb09b7b4a6f56a618a73f6a87"
+source = "git+https://github.com/laanwj/cln4rust.git?rev=bf27af90a8d5e6551816aaa130472eff62354988#bf27af90a8d5e6551816aaa130472eff62354988"
 dependencies = [
  "clightningrpc-plugin",
  "convert_case",
  "kproc-parser",
  "serde_json",
+]
+
+[[package]]
+name = "clightningrpc_gossip_map"
+version = "0.0.1-beta.5"
+source = "git+https://github.com/laanwj/cln4rust.git?rev=bf27af90a8d5e6551816aaa130472eff62354988#bf27af90a8d5e6551816aaa130472eff62354988"
+dependencies = [
+ "anyhow",
+ "bitcoin",
+ "byteorder",
+ "fundamentals",
+ "fundamentals-derive",
+ "hex",
+ "log",
 ]
 
 [[package]]
@@ -352,6 +373,24 @@ source = "registry+https://github.com/rust-lang/crates.io-index"
 checksum = "e13624c2627564efccf4934284bdd98cbaa14e79b0b5a141218e507b3a823456"
 dependencies = [
  "percent-encoding",
+]
+
+[[package]]
+name = "fundamentals"
+version = "0.0.1-alpha.4"
+source = "registry+https://github.com/rust-lang/crates.io-index"
+checksum = "664dcd7fdedb3f45dd2283d17be4cb0c158c26002e7c6987ea969950ac60264f"
+dependencies = [
+ "fundamentals-derive",
+]
+
+[[package]]
+name = "fundamentals-derive"
+version = "0.0.1-alpha.2"
+source = "registry+https://github.com/rust-lang/crates.io-index"
+checksum = "f4ade3dbe6dfe670f59595864aef67541f51921d282bfc35865e4fe1a47dac1e"
+dependencies = [
+ "kproc-parser",
 ]
 
 [[package]]
@@ -779,6 +818,9 @@ name = "kproc-parser"
 version = "0.0.1-beta.7"
 source = "registry+https://github.com/rust-lang/crates.io-index"
 checksum = "a4a3c5d81e3af35bb269378a933889f7f45c884bdf820a9c268711035430f3f7"
+dependencies = [
+ "proc-macro2",
+]
 
 [[package]]
 name = "lampo-common"
