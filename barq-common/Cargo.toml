@@ -20,7 +20,7 @@ reqwest = "0.12"
 tokio = { version = "1", features = ["rt", "sync", "time", "macros"] }
 
 # Core Lightning gossip_store reader, same cln4rust revision as barq-plugin.
-clightningrpc_gossip_map = { git = "https://github.com/laanwj/cln4rust.git", rev = "783504247bc447d847981a03f04f3184358d0c1e" }
+clightningrpc_gossip_map = { git = "https://github.com/laanwj/cln4rust.git", rev = "31e5f4e708d65b532c941511a1323adea592eef4" }
 
 [dev-dependencies]
 tokio = { version = "1", features = ["rt-multi-thread", "macros"] }

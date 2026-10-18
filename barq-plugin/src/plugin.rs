@@ -23,12 +23,14 @@ use barq_common::simulation::GraphSpec;
 use barq_common::Network;
 
 use crate::methods;
+use crate::methods::pay_hook::{self, PayHook};
 
 /// Plugin options.
 pub const OPT_RGS_URL: &str = "barq-rgs-url";
 pub const OPT_SYNC_INTERVAL: &str = "barq-sync-interval";
 pub const OPT_CLN_GOSSIP: &str = "barq-cln-gossip";
 pub const OPT_MAX_ATTEMPTS: &str = "barq-max-attempts";
+pub const OPT_OVERRIDE_PAY: &str = "barq-override-pay";
 /// Developer option: load a mocked graph (JSON `GraphSpec`) at startup.
 pub const OPT_DEV_SIMULATED_GRAPH: &str = "barq-dev-simulated-graph";
 
@@ -50,6 +52,10 @@ pub(crate) struct State {
     pub(crate) max_attempts: u32,
     /// The payment history.
     pub(crate) store: Option<Arc<PaymentStore>>,
+    /// Serve Core Lightning's `pay` command (issue #36).
+    pub(crate) override_pay: bool,
+    /// Whether lightningd supports the filtered `rpc_command` hook.
+    pub(crate) pay_hook_registered: bool,
 }
 
 impl State {
@@ -69,6 +75,8 @@ impl State {
             ),
             max_attempts: 3,
             store: None,
+            override_pay: false,
+            pay_hook_registered: false,
         }
     }
 
@@ -166,6 +174,13 @@ pub fn build_plugin() -> anyhow::Result<Plugin<State>> {
             false,
         )
         .add_opt(
+            OPT_OVERRIDE_PAY,
+            "bool",
+            Some("false".to_owned()),
+            "Serve Core Lightning's `pay` command with barq (needs Core Lightning v25.12 or later).",
+            false,
+        )
+        .add_opt(
             OPT_DEV_SIMULATED_GRAPH,
             "string",
             None,
@@ -174,6 +189,23 @@ pub fn build_plugin() -> anyhow::Result<Plugin<State>> {
             false,
         );
     plugin.register_notification("shutdown", OnShutdown);
+    // The hook must be declared in the manifest, before options are known:
+    // register it whenever lightningd supports the `pay` filter, and let
+    // `barq-override-pay` decide at runtime.
+    let version = std::env::var("LIGHTNINGD_VERSION").ok();
+    if pay_hook::supports_filters(version.as_deref()) {
+        // rpc_command is a chained hook where the first plugin that changes
+        // the request wins. Since v25.12 `cln-xpay` takes over `pay` the same
+        // way, so barq must come first.
+        plugin.register_hook_with_filters(
+            "rpc_command",
+            Some(vec!["cln-xpay".to_owned()]),
+            None,
+            Some(vec![serde_json::json!("pay")]),
+            PayHook,
+        );
+        plugin.state.pay_hook_registered = true;
+    }
     plugin.on_init(on_init);
     Ok(plugin)
 }
@@ -216,6 +248,18 @@ fn on_init(plugin: &mut Plugin<State>) -> Value {
     };
     let use_cln_gossip: bool = plugin.get_opt::<bool>(OPT_CLN_GOSSIP).unwrap_or(true);
     let interval: i64 = plugin.get_opt::<i64>(OPT_SYNC_INTERVAL).unwrap_or(3600);
+    plugin.state.override_pay = plugin.get_opt::<bool>(OPT_OVERRIDE_PAY).unwrap_or(false);
+    if plugin.state.override_pay {
+        if plugin.state.pay_hook_registered {
+            log::info!("barq serves the `pay` command");
+        } else {
+            log::warn!(
+                "barq-override-pay needs Core Lightning v{}.{} or later (rpc_command filters); `pay` is not served by barq",
+                pay_hook::FILTERS_SINCE.0,
+                pay_hook::FILTERS_SINCE.1
+            );
+        }
+    }
     plugin.state.max_attempts = plugin
         .get_opt::<i64>(OPT_MAX_ATTEMPTS)
         .unwrap_or(3)

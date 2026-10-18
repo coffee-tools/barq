@@ -62,6 +62,7 @@ graph. It leaves out some information, which matters in these cases:
 | `barq-sync-interval`    | `3600`  | Seconds between background refreshes of the graph (RGS + gossip_store). `0` disables the background sync.                     |
 | `barq-cln-gossip`       | `true`  | Feed the LDK graph with the Core Lightning `gossip_store`.                                                                    |
 | `barq-max-attempts`     | `3`     | How many routes `barqpay` tries before giving up.                                                                             |
+| `barq-override-pay`     | `false` | Serve Core Lightning's own `pay` command with barq (Core Lightning v25.12 or later). See below.                               |
 
 Example for a regtest node with a self-hosted RGS server:
 
@@ -90,6 +91,30 @@ file holds `{"channels": [...]}` where each channel has `node1`, `node2`
 `fee_proportional_millionths`, `cltv_expiry_delta`, `htlc_minimum_msat`,
 `htlc_maximum_msat`, `disabled`). Payments cannot settle over mocked nodes.
 See `tests/test_simulation.py`.
+
+## Serving Core Lightning's `pay`
+
+With `barq-override-pay=true`, barq takes over the `pay` command itself, so
+anything that calls `pay` (you, other plugins, scripts, test suites) pays
+with barq. The answer keeps `pay`'s format and error codes; barq's details
+(the `id`, the attempts) are in the error data, and every payment is in
+`barqinspect`. barq reads `bolt11`, `amount_msat` and `label`; `pay`'s
+other parameters are ignored.
+
+This uses an `rpc_command` hook filtered to `pay`, which needs Core
+Lightning v25.12 or later. On older versions barq does not register the
+hook and logs that `pay` is not served.
+
+Since v25.12, xpay also takes over `pay` by default. barq only serves
+`pay` when xpay does not:
+
+```
+lightning-cli setconfig xpay-handle-pay false
+```
+
+Otherwise barq logs a warning and leaves `pay` to xpay. Both plugins
+answering the same command crash lightningd (a double free in Core
+Lightning's chained hook, seen on v26.06.9), so barq never does that.
 
 # Barq commands
 

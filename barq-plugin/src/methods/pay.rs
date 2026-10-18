@@ -129,7 +129,7 @@ pub fn barq_pay(
     plugin.state.block_on(pay(state, request))
 }
 
-async fn pay(state: State, request: BarqPayRequest) -> Result<json::Value, PluginError> {
+pub(crate) async fn pay(state: State, request: BarqPayRequest) -> Result<json::Value, PluginError> {
     let state = &state;
     let ctx = state.ctx()?;
 

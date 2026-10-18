@@ -262,3 +262,17 @@ pub async fn waitsendpay(
         Err(error) => Err(rpc_err(error)),
     }
 }
+
+/// Whether `cln-xpay` currently takes over `pay` (`xpay-handle-pay`).
+/// `false` when xpay is not running.
+pub async fn xpay_handles_pay(state: &State) -> bool {
+    match state
+        .call::<_, Value>("listconfigs", json!({ "config": "xpay-handle-pay" }))
+        .await
+    {
+        Ok(configs) => configs["configs"]["xpay-handle-pay"]["value_bool"]
+            .as_bool()
+            .unwrap_or(false),
+        Err(_) => false,
+    }
+}
