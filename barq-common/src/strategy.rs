@@ -20,16 +20,20 @@ pub enum StrategyKind {
     /// LDK path finding with the probabilistic scorer.
     #[default]
     Probabilistic,
+    /// A program speaking barq's external strategy protocol (issue #12).
+    External,
 }
 
 impl StrategyKind {
-    /// Every built-in strategy, in tie-break order.
+    /// Every built-in strategy, in tie-break order. `External` is added
+    /// after them when one is configured.
     pub const ALL: [StrategyKind; 2] = [StrategyKind::Direct, StrategyKind::Probabilistic];
 
     pub fn name(&self) -> &'static str {
         match self {
             StrategyKind::Direct => "direct",
             StrategyKind::Probabilistic => "probabilistic",
+            StrategyKind::External => "external",
         }
     }
 }
@@ -41,6 +45,7 @@ impl FromStr for StrategyKind {
         match s.to_lowercase().as_str() {
             "direct" => Ok(Self::Direct),
             "probabilistic" | "ldk" => Ok(Self::Probabilistic),
+            "external" => Ok(Self::External),
             _ => anyhow::bail!("Strategy `{s}` not found"),
         }
     }

@@ -17,6 +17,7 @@ use clightningrpc_plugin::errors::PluginError;
 use clightningrpc_plugin::plugin::Plugin;
 use clightningrpc_plugin_macros::{plugin, rpc_method};
 
+use barq_common::algorithms::external::ExternalStrategy;
 use barq_common::history::PaymentStore;
 use barq_common::network::{default_rgs_url, NetworkContext};
 use barq_common::simulation::GraphSpec;
@@ -31,6 +32,8 @@ pub const OPT_SYNC_INTERVAL: &str = "barq-sync-interval";
 pub const OPT_CLN_GOSSIP: &str = "barq-cln-gossip";
 pub const OPT_MAX_ATTEMPTS: &str = "barq-max-attempts";
 pub const OPT_OVERRIDE_PAY: &str = "barq-override-pay";
+pub const OPT_EXTERNAL_STRATEGY: &str = "barq-external-strategy";
+pub const OPT_EXTERNAL_TIMEOUT: &str = "barq-external-strategy-timeout";
 /// Developer option: load a mocked graph (JSON `GraphSpec`) at startup.
 pub const OPT_DEV_SIMULATED_GRAPH: &str = "barq-dev-simulated-graph";
 
@@ -56,6 +59,8 @@ pub(crate) struct State {
     pub(crate) override_pay: bool,
     /// Whether lightningd supports the filtered `rpc_command` hook.
     pub(crate) pay_hook_registered: bool,
+    /// A strategy implemented by an external program (issue #12).
+    pub(crate) external_strategy: Option<ExternalStrategy>,
 }
 
 impl State {
@@ -77,6 +82,7 @@ impl State {
             store: None,
             override_pay: false,
             pay_hook_registered: false,
+            external_strategy: None,
         }
     }
 
@@ -181,6 +187,21 @@ pub fn build_plugin() -> anyhow::Result<Plugin<State>> {
             false,
         )
         .add_opt(
+            OPT_EXTERNAL_STRATEGY,
+            "string",
+            None,
+            "Path to a program implementing barq's external strategy protocol; it is \
+             ranked as the `external` strategy.",
+            false,
+        )
+        .add_opt(
+            OPT_EXTERNAL_TIMEOUT,
+            "int",
+            Some("30".to_owned()),
+            "Seconds the external strategy program may take to answer.",
+            false,
+        )
+        .add_opt(
             OPT_DEV_SIMULATED_GRAPH,
             "string",
             None,
@@ -248,6 +269,19 @@ fn on_init(plugin: &mut Plugin<State>) -> Value {
     };
     let use_cln_gossip: bool = plugin.get_opt::<bool>(OPT_CLN_GOSSIP).unwrap_or(true);
     let interval: i64 = plugin.get_opt::<i64>(OPT_SYNC_INTERVAL).unwrap_or(3600);
+    if let Some(program) = plugin.get_opt::<String>(OPT_EXTERNAL_STRATEGY) {
+        let mut strategy = ExternalStrategy::new(&program);
+        strategy.workdir = Some(lightning_dir.clone());
+        strategy.rpc_file = config.rpc_file.clone();
+        strategy.timeout = Duration::from_secs(
+            plugin
+                .get_opt::<i64>(OPT_EXTERNAL_TIMEOUT)
+                .unwrap_or(30)
+                .clamp(1, 600) as u64,
+        );
+        log::info!("external strategy: {program}");
+        plugin.state.external_strategy = Some(strategy);
+    }
     plugin.state.override_pay = plugin.get_opt::<bool>(OPT_OVERRIDE_PAY).unwrap_or(false);
     if plugin.state.override_pay {
         if plugin.state.pay_hook_registered {

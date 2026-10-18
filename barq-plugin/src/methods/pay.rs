@@ -99,6 +99,9 @@ pub fn build_strategy(state: &State, kind: StrategyKind) -> Result<Box<dyn Strat
     Ok(match kind {
         StrategyKind::Direct => Box::new(Direct::new()),
         StrategyKind::Probabilistic => Box::new(LDKRoutingStrategy::new(state.ctx()?)),
+        StrategyKind::External => Box::new(state.external_strategy.clone().ok_or_else(|| {
+            error!("No external strategy configured: set `barq-external-strategy`")
+        })?),
     })
 }
 

@@ -24,3 +24,7 @@ clippy:
 
 release:
 	$(CC) build --release
+
+# Generate a strategy skeleton: make strategy NAME=my_strategy LANG=rust|python
+strategy:
+	python3 contrib/new_strategy.py $(NAME) --lang $(or $(LANG),rust)

@@ -62,6 +62,8 @@ graph. It leaves out some information, which matters in these cases:
 | `barq-sync-interval`    | `3600`  | Seconds between background refreshes of the graph (RGS + gossip_store). `0` disables the background sync.                     |
 | `barq-cln-gossip`       | `true`  | Feed the LDK graph with the Core Lightning `gossip_store`.                                                                    |
 | `barq-max-attempts`     | `3`     | How many routes `barqpay` tries before giving up.                                                                             |
+| `barq-external-strategy` | unset | Program implementing an external strategy (any language), ranked as `external`. See below.                           |
+| `barq-external-strategy-timeout` | `30` | Seconds the external strategy may take to answer.                                                               |
 | `barq-override-pay`     | `false` | Serve Core Lightning's own `pay` command with barq (Core Lightning v25.12 or later). See below.                               |
 
 Example for a regtest node with a self-hosted RGS server:
@@ -91,6 +93,47 @@ file holds `{"channels": [...]}` where each channel has `node1`, `node2`
 `fee_proportional_millionths`, `cltv_expiry_delta`, `htlc_minimum_msat`,
 `htlc_maximum_msat`, `disabled`). Payments cannot settle over mocked nodes.
 See `tests/test_simulation.py`.
+
+## Writing a strategy
+
+Generate a skeleton with:
+
+```
+make strategy NAME=my_strategy LANG=rust     # or LANG=python
+```
+
+- **Rust** (`contrib/new_strategy.py NAME --lang rust`): writes
+  `barq-common/src/algorithms/NAME.rs`, a `Strategy` implementation with a
+  unit test on a simulated network, and registers the module. Add a
+  `StrategyKind` variant and a case in `build_strategy` to make barq use it.
+- **Any language** (`--lang python` generates a working example): an
+  external strategy is a program. Set `barq-external-strategy=/path/to/it`
+  and it is ranked as the `external` strategy (or forced with
+  `strategy=external`).
+
+### External strategy protocol
+
+For each route barq needs, it runs the program in the node's lightning-dir,
+writes one JSON request on its stdin and reads one JSON response from its
+stdout:
+
+```
+request:  {"version": 1, "source": "<our node id>", "destination": "<node id>",
+           "amount_msat": 1000, "final_cltv_delta": 18,
+           "first_hops": [{"peer_id", "short_channel_id", "spendable_msat",
+                           "htlc_minimum_msat", "htlc_maximum_msat"}],
+           "excluded_channels": ["103x1x0"], "rpc_file": "lightning-rpc"}
+response: {"route": [{"id", "channel", "fee_msat", "cltv_expiry_delta"}]}
+          or {"error": "why there is no route"}
+```
+
+Each hop's `fee_msat` is what that hop's node receives on top of what it
+forwards (the last hop's is the amount delivered), and `cltv_expiry_delta`
+is the delta it adds (the last hop's is the final CLTV delta). The program
+can query Core Lightning through `rpc_file`. barq checks the route before
+using it: the first hop must be one of our channels, the last hop the
+destination with exactly the amount, and no excluded channel may be used.
+External strategies cannot pay BOLT12 blinded paths.
 
 ## Serving Core Lightning's `pay`
 

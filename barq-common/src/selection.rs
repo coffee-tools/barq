@@ -141,6 +141,14 @@ pub fn rank(strategies: &[NamedStrategy], input: &RouteInput) -> Ranking {
             Err(err) => ranking.rejected.push(reject(format!("{err}"))),
         }
     }
+    if let Some(forced) = forced {
+        if !strategies.iter().any(|s| s.name == forced) {
+            ranking.rejected.push(Rejected {
+                strategy: forced.to_owned(),
+                reason: format!("Strategy `{forced}` is not available"),
+            });
+        }
+    }
     // Stable: equal routes keep the strategy order.
     ranking
         .candidates
@@ -336,6 +344,18 @@ mod tests {
         let forced = rank(&builtin(&net), &input);
         assert!(forced.candidates.is_empty());
         assert_eq!(forced.rejected.len(), 1);
+    }
+
+    #[test]
+    fn forcing_an_unavailable_strategy_says_so() {
+        let mut input = input();
+        input.strategy = Some(StrategyKind::External);
+        let ranking = rank(&[fixed("direct", Some(vec![(1, 1000, 18)]))], &input);
+        assert!(ranking.candidates.is_empty());
+        assert_eq!(
+            ranking.explain(),
+            "external: Strategy `external` is not available"
+        );
     }
 
     #[test]

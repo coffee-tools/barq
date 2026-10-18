@@ -53,12 +53,16 @@ pub async fn load(state: &State) -> Result<NodeContext, PluginError> {
 /// Every built-in strategy, in tie-break order (direct first: it never
 /// pays fees).
 pub fn strategies(state: &State) -> Result<Vec<NamedStrategy>, PluginError> {
-    StrategyKind::ALL
-        .iter()
+    let mut kinds = StrategyKind::ALL.to_vec();
+    if state.external_strategy.is_some() {
+        kinds.push(StrategyKind::External);
+    }
+    kinds
+        .into_iter()
         .map(|kind| {
             Ok(NamedStrategy::new(
                 kind.name(),
-                build_strategy(state, *kind)?,
+                build_strategy(state, kind)?,
             ))
         })
         .collect()
@@ -66,5 +70,10 @@ pub fn strategies(state: &State) -> Result<Vec<NamedStrategy>, PluginError> {
 
 /// Rank the routes every applicable strategy proposes for `input`.
 pub fn rank(state: &State, input: &RouteInput) -> Result<Ranking, PluginError> {
+    if input.strategy == Some(StrategyKind::External) && state.external_strategy.is_none() {
+        return Err(error!(
+            "No external strategy configured: set `barq-external-strategy`"
+        ));
+    }
     Ok(selection::rank(&strategies(state)?, input))
 }
