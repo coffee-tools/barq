@@ -1,0 +1,4 @@
+# Core Lightning tests that pass with Core Lightning's own `pay` and are
+# known to fail with barq serving `pay`, one `file::test  # reason` per line.
+# compare_junit.py fails the build on a barq failure that is not listed here,
+# and reports listed tests that pass again so they can be removed.
