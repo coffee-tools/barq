@@ -1,0 +1,24 @@
+diff --git a/tests/fixtures.py b/tests/fixtures.py
+index 186d8723..e4e83188 100644
+--- a/tests/fixtures.py
++++ b/tests/fixtures.py
+@@ -57,6 +57,19 @@ class LightningNode(utils.LightningNode):
+                 self.daemon.opts['plugin={}'.format(dblog)] = None
+                 self.daemon.opts['dblog-file'] = 'dblog.sqlite3'
+ 
++        # TEST_BARQ_PLUGIN=/path/to/barq-plugin runs the suite with barq
++        # (https://github.com/coffee-tools/barq) serving `pay`, to check
++        # that barq is a drop-in replacement for it.
++        barq = os.environ.get("TEST_BARQ_PLUGIN")
++        if barq:
++            self.daemon.opts['plugin={}'.format(barq)] = None
++            self.daemon.opts['barq-override-pay'] = True
++            # xpay also takes over `pay`; two plugins answering the same
++            # rpc_command crash lightningd, so turn xpay's takeover off.
++            disabled = self.daemon.opts.get('disable-plugin')
++            if 'cln-xpay' not in str(disabled):
++                self.daemon.opts['xpay-handle-pay'] = False
++
+         if db_type == 'postgres' and ('disable-plugin', 'bookkeeper') not in self.daemon.opts.items():
+             accts_db = self.db.provider.get_db('', 'accounts', 0)
+             self.daemon.opts['bookkeeper-db'] = accts_db.get_dsn()

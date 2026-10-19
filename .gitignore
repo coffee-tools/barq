@@ -1,2 +1,4 @@
 /target
 tests/__pycache__
+tests/cln/lightning
+tests/cln/results

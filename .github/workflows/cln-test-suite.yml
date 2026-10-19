@@ -1,0 +1,19 @@
+# Core Lightning's own pay tests, natively and with barq serving `pay`.
+# The workflow lives in the Core Lightning fork that carries the
+# TEST_BARQ_PLUGIN hook; it builds barq at this commit and fails when barq
+# fails a test that passes natively and is not in
+# tests/cln/expected-failures.txt. See tests/cln/README.md.
+name: Core Lightning test suite
+
+on:
+  pull_request:
+  push:
+    branches: [main]
+  workflow_dispatch:
+
+jobs:
+  pay:
+    uses: vincenzopalazzo/lightning/.github/workflows/barq.yaml@barq-pay-tests
+    with:
+      barq_repo: ${{ github.event.pull_request.head.repo.full_name || github.repository }}
+      barq_ref: ${{ github.event.pull_request.head.sha || github.sha }}
