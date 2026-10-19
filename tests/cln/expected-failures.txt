@@ -10,7 +10,7 @@ test_pay::test_mpp_adaptive  # needs MPP: no single route carries the amount
 # itself has in flight. Between two barq attempts every part is failed, so
 # these tests, which poll listpays while barq retries, see "failed".
 test_pay::test_pay_retry  # listpays shows failed between barq's attempts
-test_pay::test_pay_avoid_low_fee_chan  # listpays shows failed between barq's attempts
+test_pay::test_pay_avoid_low_fee_chan  # listpays shows failed between barq's attempts (timing dependent)
 
 # barq learns from failures across payments.
 test_pay::test_pay_error_update_fees  # second payment needs 1 attempt, not 2: barq kept the fee update
