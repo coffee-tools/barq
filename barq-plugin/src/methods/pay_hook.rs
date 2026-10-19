@@ -198,27 +198,40 @@ impl RPCCommand<State> for PayHook {
             return Ok(json!({ "result": "continue" }));
         }
         log::info!("serving `pay` with barq: {}", command["params"]);
-        let pay_request = match barqpay_request(&command["params"]) {
-            Ok(r) => r,
-            Err(message) => {
-                return Ok(json!({ "return": { "error": {
-                    "code": JSONRPC2_INVALID_PARAMS,
-                    "message": message,
-                }}}))
-            }
-        };
-        let created_at = SystemTime::now()
-            .duration_since(UNIX_EPOCH)
-            .map(|d| d.as_secs_f64())
-            .unwrap_or(0.0);
-        Ok(match plugin.state.block_on(pay::pay(state, pay_request)) {
-            Ok(result) => json!({ "return": { "result": pay_result(&result, created_at) } }),
-            Err(err) => {
-                let err = serde_json::to_value(&err).unwrap_or_default();
-                json!({ "return": { "error": pay_error(&err) } })
-            }
+        Ok(match serve_pay(plugin, &command["params"]) {
+            Ok(result) => json!({ "return": { "result": result } }),
+            Err(error) => json!({ "return": { "error": error } }),
         })
     }
+}
+
+/// Pay with barq through `pay`'s interface: `pay`'s parameters (by name or
+/// position), `pay`'s result format and `pay`'s error codes. Used by the
+/// `pay` hook and by the `rpay` command.
+pub fn serve_pay(plugin: &mut Plugin<State>, params: &Value) -> Result<Value, Value> {
+    let pay_request = barqpay_request(params)
+        .map_err(|message| json!({ "code": JSONRPC2_INVALID_PARAMS, "message": message }))?;
+    let created_at = SystemTime::now()
+        .duration_since(UNIX_EPOCH)
+        .map(|d| d.as_secs_f64())
+        .unwrap_or(0.0);
+    let state = plugin.state.clone();
+    match plugin.state.block_on(pay::pay(state, pay_request)) {
+        Ok(result) => Ok(pay_result(&result, created_at)),
+        Err(err) => Err(pay_error(&serde_json::to_value(&err).unwrap_or_default())),
+    }
+}
+
+/// The `rpay` command: `pay`'s interface, always served by barq.
+pub fn rpay(plugin: &mut Plugin<State>, params: Value) -> Result<Value, PluginError> {
+    log::info!("rpay called with request: {params}");
+    serve_pay(plugin, &params).map_err(|error| {
+        PluginError::new(
+            error["code"].as_i64().unwrap_or(-1) as i32,
+            error["message"].as_str().unwrap_or("barq payment failed"),
+            error.get("data").cloned(),
+        )
+    })
 }
 
 #[cfg(test)]

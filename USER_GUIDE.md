@@ -222,6 +222,19 @@ A BOLT12 invoice is obtained as usual with `fetchinvoice`; barq routes to
 the introduction node of one of its blinded paths and builds the blinded
 payloads itself.
 
+## `rpay`
+
+`pay`'s interface, always served by barq: the same parameters (`bolt11`,
+`amount_msat`, `label`, by name or position; `pay`'s other parameters are
+accepted and ignored), the same result format and the same error codes
+(203, 205, 210). It needs no hook, so it works on every Core Lightning
+version and alongside xpay. Every payment is also recorded in
+`barqinspect`.
+
+```
+lightning-cli rpay <bolt11-or-bolt12-invoice> [amount_msat] [label]
+```
+
 ## `barqrouteinfo`
 
 Compute a route without paying: `dest_pubkey`, `amount_msat`, optional

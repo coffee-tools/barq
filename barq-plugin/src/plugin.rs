@@ -142,6 +142,7 @@ pub fn build_plugin() -> anyhow::Result<Plugin<State>> {
         notification: [],
         methods: [
             barq_pay,
+            rpay,
             barq_route_info,
             barq_sync_gossip,
             barq_inspect,
@@ -351,6 +352,14 @@ fn on_init(plugin: &mut Plugin<State>) -> Value {
 )]
 pub fn barq_pay(plugin: &mut Plugin<State>, request: Value) -> Result<Value, PluginError> {
     methods::pay::barq_pay(plugin, request)
+}
+
+#[rpc_method(
+    rpc_name = "rpay",
+    description = "Pay an invoice with barq through pay's interface: same parameters, result and error codes as pay"
+)]
+pub fn rpay(plugin: &mut Plugin<State>, request: Value) -> Result<Value, PluginError> {
+    methods::pay_hook::rpay(plugin, request)
 }
 
 #[rpc_method(
