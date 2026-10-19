@@ -245,6 +245,10 @@ mod tests {
         assert_eq!(parse_version("v24.02.2-123-gabcdef"), Some((24, 2)));
         assert_eq!(parse_version("25.09"), Some((25, 9)));
         assert_eq!(parse_version("garbage"), None);
+        // `git describe --always` without tags: the commit hash alone.
+        assert_eq!(parse_version("61cf23c"), None);
+        assert_eq!(parse_version("v26.06.9-1-g61cf23c"), Some((26, 6)));
+        assert_eq!(parse_version("v26.06.9-modded"), Some((26, 6)));
         assert!(supports_filters(Some("v26.06.9")));
         assert!(supports_filters(Some("v25.12")));
         assert!(!supports_filters(Some("v25.09")));
