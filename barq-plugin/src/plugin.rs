@@ -288,10 +288,20 @@ fn on_init(plugin: &mut Plugin<State>) -> Value {
         if plugin.state.pay_hook_registered {
             log::info!("barq serves the `pay` command");
         } else {
+            // A build from an untagged checkout reports a bare commit hash,
+            // which says nothing about filter support: say so, since that
+            // looks like a recent version to whoever built it.
+            let version = std::env::var("LIGHTNINGD_VERSION").unwrap_or_default();
             log::warn!(
-                "barq-override-pay needs Core Lightning v{}.{} or later (rpc_command filters); `pay` is not served by barq",
+                "barq-override-pay needs Core Lightning v{}.{} or later (rpc_command filters), \
+                 and this lightningd reports version {version:?}, which {}; `pay` is not served by barq",
                 pay_hook::FILTERS_SINCE.0,
-                pay_hook::FILTERS_SINCE.1
+                pay_hook::FILTERS_SINCE.1,
+                if pay_hook::parse_version(&version).is_some() {
+                    "is older"
+                } else {
+                    "is not a release version (built without git tags?)"
+                }
             );
         }
     }
