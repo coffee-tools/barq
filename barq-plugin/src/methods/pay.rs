@@ -898,7 +898,14 @@ impl Payment<'_> {
             id: first.pubkey.to_string(),
             channel: first_channel,
             amount_msat: onion.first_hop_amount_msat,
-            delay: onion.first_hop_cltv_expiry.saturating_sub(height + 1),
+            // lightningd adds `delay` to its own base height, the higher of
+            // its tip and its cached header count, which may lag behind the
+            // header count `height` came from. Counting from the tip (the
+            // lowest base it can use) never gives the first hop less than
+            // the onion expects; a few blocks more are accepted.
+            delay: onion
+                .first_hop_cltv_expiry
+                .saturating_sub(node.blockheight + 1),
         };
 
         let sent = cln::sendonion_raw(
