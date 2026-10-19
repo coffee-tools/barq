@@ -1,4 +1,7 @@
 [toolchain]
-channel = "nightly"
-components = [ "rustfmt" ]
+# Pinned: newer nightlies (rust-lang/rust#148922, type inference of the
+# never type) no longer compile lightning 0.0.123. Move forward together
+# with an LDK upgrade.
+channel = "nightly-2026-08-08"
+components = [ "rustfmt", "clippy" ]
 profile = "minimal"
