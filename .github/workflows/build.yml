@@ -18,7 +18,8 @@ jobs:
       - name: Set up Rust
         uses: dtolnay/rust-toolchain@stable
         with:
-          toolchain: nightly # nightly is required for fmt
+          # nightly is required for fmt; keep in sync with rust-toolchain.
+          toolchain: nightly-2026-08-08
           components: rustfmt, clippy
 
       - name: Print Cargo version
