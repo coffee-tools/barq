@@ -1192,7 +1192,9 @@ async fn learn_channel_update(
         .iter()
         .find(|hop| hop.short_channel_id == contents.short_channel_id)
         .map(|hop| hop.pubkey);
-    if let (Some(from), Some(to)) = (point.node, next) {
+    // (A failure at the final node names the channel into it: no
+    // forwarding direction to check there.)
+    if let (Some(from), Some(to)) = (point.node, next.filter(|to| Some(*to) != point.node)) {
         let expected = u8::from(from.serialize() > to.serialize());
         if contents.flags & 1 != expected {
             log::warn!(
