@@ -1,7 +1,8 @@
 //! `barqpay`: rank the routes of every applicable strategy, try the best
 //! one, and fall back to the next on failure (issues #10 and #16).
+use std::collections::HashSet;
 use std::str::FromStr;
-use std::sync::Arc;
+use std::sync::{Arc, Mutex};
 use std::time::{SystemTime, UNIX_EPOCH};
 
 use serde::{Deserialize, Serialize};
@@ -10,6 +11,7 @@ use serde_json as json;
 use clightningrpc_plugin::error;
 use clightningrpc_plugin::errors::PluginError;
 use clightningrpc_plugin::plugin::Plugin;
+use clightningrpc_plugin::responder::Responder;
 
 use barq_common::algorithms::direct::Direct;
 use barq_common::algorithms::probabilistic::LDKRoutingStrategy;
@@ -182,18 +184,45 @@ pub fn describe_path(path: &Path) -> Vec<RouteHopJson> {
         .collect()
 }
 
-/// Barq RPC method to execute a payment.
-///
-/// cln4rust dispatches RPC methods synchronously, so the async payment flow
-/// runs to completion on the plugin's tokio runtime.
-pub fn barq_pay(
-    plugin: &mut Plugin<State>,
-    request: json::Value,
-) -> Result<json::Value, PluginError> {
+/// Barq RPC method to execute a payment: it answers when the payment
+/// completes, and other requests are served in the meantime.
+pub fn barq_pay(plugin: &mut Plugin<State>, request: json::Value, responder: Responder) {
     log::info!("barqpay called with request: {}", request);
-    let request: BarqPayRequest = json::from_value(request).map_err(|err| error!("{err}"))?;
-    let state = plugin.state.clone();
-    plugin.state.block_on(pay(state, request))
+    let request: BarqPayRequest = match json::from_value(request) {
+        Ok(request) => request,
+        Err(err) => return responder.respond(Err(error!("{err}"))),
+    };
+    plugin
+        .state
+        .respond_later(responder, "barqpay", move |state| async move {
+            pay(state, request).await
+        });
+}
+
+/// Marks a payment hash as being paid by barq until dropped.
+struct InFlight {
+    hashes: Arc<Mutex<HashSet<String>>>,
+    payment_hash: String,
+}
+
+impl InFlight {
+    /// `None` when barq is already paying `payment_hash`.
+    fn start(state: &State, payment_hash: &str) -> Option<Self> {
+        let mut hashes = state.in_flight.lock().unwrap();
+        if !hashes.insert(payment_hash.to_owned()) {
+            return None;
+        }
+        Some(InFlight {
+            hashes: state.in_flight.clone(),
+            payment_hash: payment_hash.to_owned(),
+        })
+    }
+}
+
+impl Drop for InFlight {
+    fn drop(&mut self) {
+        self.hashes.lock().unwrap().remove(&self.payment_hash);
+    }
 }
 
 pub(crate) async fn pay(state: State, request: BarqPayRequest) -> Result<json::Value, PluginError> {
@@ -263,7 +292,18 @@ pub(crate) async fn pay(state: State, request: BarqPayRequest) -> Result<json::V
 
     // Like `pay`: an invoice already paid answers with that payment, and
     // a payment still in flight is not started twice. Every attempt of
-    // this payment goes in the next group.
+    // this payment goes in the next group. Two barq payments of the same
+    // invoice at once would both pick the next group before either sends,
+    // so the second one stops here.
+    let Some(_in_flight) = InFlight::start(state, &invoice.payment_hash) else {
+        return Err(fail(
+            PAY_IN_PROGRESS,
+            format!(
+                "Payment with payment_hash={} is already in progress, cannot retry before that completes.",
+                invoice.payment_hash
+            ),
+        ));
+    };
     let previous = cln::listsendpays(state, &invoice.payment_hash).await?;
     if let Some(done) = previous.iter().find(|p| p.status == "complete") {
         log::info!("invoice {} is already paid", invoice.payment_hash);
@@ -1276,6 +1316,18 @@ mod tests {
     use barq_common::ldk::ln::features::BlindedHopFeatures;
 
     use super::*;
+
+    #[test]
+    fn one_payment_per_hash_at_a_time() {
+        let state = State::new();
+        let first = InFlight::start(&state, "aa").unwrap();
+        assert!(InFlight::start(&state, "aa").is_none());
+        let other = InFlight::start(&state, "bb").unwrap();
+        drop(first);
+        let again = InFlight::start(&state, "aa").unwrap();
+        drop((other, again));
+        assert!(state.in_flight.lock().unwrap().is_empty());
+    }
 
     fn pk(hex: &str) -> PublicKey {
         PublicKey::from_str(hex).unwrap()

@@ -65,6 +65,9 @@ pub struct NetworkContext {
     gossip_store: Mutex<Option<GossipStoreReader>>,
     rgs_url: Option<String>,
     sync_lock: tokio::sync::Mutex<()>,
+    /// Concurrent payments persist at the same time: one writer at a time
+    /// for the temporary files.
+    persist_lock: Mutex<()>,
 }
 
 impl NetworkContext {
@@ -110,6 +113,7 @@ impl NetworkContext {
             gossip_store: Mutex::new(gossip_store_path.map(GossipStoreReader::new)),
             rgs_url,
             sync_lock: tokio::sync::Mutex::new(()),
+            persist_lock: Mutex::new(()),
         }))
     }
 
@@ -297,6 +301,10 @@ impl NetworkContext {
 
     /// Write the graph and the scorer to disk.
     pub fn persist(&self) -> Result<()> {
+        let _writing = self
+            .persist_lock
+            .lock()
+            .unwrap_or_else(|poisoned| poisoned.into_inner());
         let graph_path = Self::graph_path(&self.data_dir, self.network);
         Self::atomic_write(&graph_path, &self.graph.encode())?;
         let scorer_bytes = self.scorer.lock().unwrap().encode();
@@ -432,5 +440,27 @@ mod tests {
         let second = ctx.sync_rapid_gossip().await.unwrap();
         assert!(second >= first);
         std::fs::remove_dir_all(dir).unwrap();
+    }
+
+    /// Payments that finish together persist together: every write must
+    /// succeed and leave files that load again.
+    #[test]
+    fn concurrent_persists() {
+        let dir = std::env::temp_dir().join(format!("barq-persist-{}", std::process::id()));
+        let _ = fs::remove_dir_all(&dir);
+        let ctx = NetworkContext::new(Network::Regtest, dir.clone(), None, None).unwrap();
+        let writers: Vec<_> = (0..8)
+            .map(|_| {
+                let ctx = ctx.clone();
+                std::thread::spawn(move || (0..20).try_for_each(|_| ctx.persist()))
+            })
+            .collect();
+        for writer in writers {
+            writer.join().unwrap().unwrap();
+        }
+        drop(ctx);
+        let graph_path = NetworkContext::graph_path(&dir, Network::Regtest);
+        assert!(NetworkContext::load_graph(&graph_path, Arc::new(LampoLogger::new())).is_some());
+        fs::remove_dir_all(dir).unwrap();
     }
 }

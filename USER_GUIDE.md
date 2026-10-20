@@ -184,6 +184,10 @@ Lightning's chained hook, seen on v26.06.9), so barq never does that.
 
 `lightning-cli --network=<network-name> -k <barq-command> <param>=<value> ...`
 
+Payments (`barqpay`, `rpay` and `pay` when barq serves it) run side by side: a payment still in
+flight does not hold up other payments or other barq commands. Paying an invoice barq is already
+paying fails at once with `pay`'s error code 200, like `pay` does for a payment in progress.
+
 ## `barqpay`
 
 Pay a BOLT11 or BOLT12 invoice.
