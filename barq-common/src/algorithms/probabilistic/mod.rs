@@ -157,9 +157,10 @@ impl Strategy for LDKRoutingStrategy {
             .map_err(|e| anyhow::anyhow!("Failed to find route: {}", e.err))?
         };
 
-        let Some(path) = route.paths.into_iter().next() else {
+        let Some(mut path) = route.paths.into_iter().next() else {
             anyhow::bail!("LDK returned a route without paths");
         };
+        one_hop_blinded_cltv(&mut path, &input.payee);
         log::info!(
             "ldk routing: {} hop(s), {} msat fee, blinded tail: {}",
             path.hops.len(),
@@ -167,6 +168,102 @@ impl Strategy for LDKRoutingStrategy {
             path.blinded_tail.is_some()
         );
         Ok(RouteOutput { path })
+    }
+}
+
+/// LDK routes to a one-hop blinded path (the recipient is its own
+/// introduction node) with a CLTV delta of 0 for the final hop: it takes
+/// such paths as stand-ins whose payinfo is a placeholder. Core Lightning
+/// puts its minimum final CLTV there and enforces it ("Expiry cltv too
+/// soon"), so the path's `cltv_expiry_delta` is added to the final hop.
+pub fn one_hop_blinded_cltv(path: &mut lampo_common::ldk::routing::router::Path, payee: &Payee) {
+    let Payee::Blinded { paths, .. } = payee else {
+        return;
+    };
+    let Some(tail) = path.blinded_tail.as_ref().filter(|t| t.hops.len() == 1) else {
+        return;
+    };
+    let Some((payinfo, _)) = paths
+        .iter()
+        .find(|(_, blinded)| blinded.blinding_point == tail.blinding_point)
+    else {
+        return;
+    };
+    if let Some(last) = path.hops.last_mut() {
+        last.cltv_expiry_delta += payinfo.cltv_expiry_delta as u32;
+    }
+}
+
+#[cfg(test)]
+mod one_hop_tests {
+    use std::str::FromStr;
+
+    use lampo_common::ldk::blinded_path::{BlindedHop, BlindedPath, IntroductionNode};
+    use lampo_common::ldk::ln::features::{BlindedHopFeatures, ChannelFeatures, NodeFeatures};
+    use lampo_common::ldk::offers::invoice::BlindedPayInfo;
+    use lampo_common::ldk::routing::router::{BlindedTail, Path, RouteHop};
+    use lampo_common::secp256k1::PublicKey;
+
+    use super::*;
+
+    fn pk(hex: &str) -> PublicKey {
+        PublicKey::from_str(hex).unwrap()
+    }
+
+    #[test]
+    fn one_hop_blinded_paths_get_their_cltv() {
+        let bob = pk("0324653eac434488002cc06bbfb7f10fe18991e35f9fe4302dbea6d2353dc0ab1c");
+        let point = pk("027f31ebc5462c1fdce1b737ecff52d37d75dea43ce11c74d25aa297165faa2007");
+        let payinfo = BlindedPayInfo {
+            fee_base_msat: 0,
+            fee_proportional_millionths: 0,
+            htlc_minimum_msat: 0,
+            htlc_maximum_msat: u64::MAX,
+            cltv_expiry_delta: 10,
+            features: BlindedHopFeatures::empty(),
+        };
+        let blinded = |hops: usize| BlindedPath {
+            introduction_node: IntroductionNode::NodeId(bob),
+            blinding_point: point,
+            blinded_hops: vec![
+                BlindedHop {
+                    blinded_node_id: point,
+                    encrypted_payload: vec![1],
+                };
+                hops
+            ],
+        };
+        let path = |shadow: u32, hops: usize| Path {
+            hops: vec![RouteHop {
+                pubkey: bob,
+                node_features: NodeFeatures::empty(),
+                short_channel_id: 1,
+                channel_features: ChannelFeatures::empty(),
+                fee_msat: 12_000,
+                // LDK's 0 for the one-hop path, plus its random offset.
+                cltv_expiry_delta: shadow,
+                maybe_announced_channel: true,
+            }],
+            blinded_tail: Some(BlindedTail {
+                hops: blinded(hops).blinded_hops,
+                blinding_point: point,
+                excess_final_cltv_expiry_delta: shadow,
+                final_value_msat: 12_000,
+            }),
+        };
+        let payee = |hops: usize| Payee::Blinded {
+            paths: vec![(payinfo.clone(), blinded(hops))],
+            features: None,
+        };
+
+        let mut one = path(6, 1);
+        one_hop_blinded_cltv(&mut one, &payee(1));
+        assert_eq!(one.hops[0].cltv_expiry_delta, 16);
+
+        // Longer paths already carry the payinfo's delta.
+        let mut two = path(46, 2);
+        one_hop_blinded_cltv(&mut two, &payee(2));
+        assert_eq!(two.hops[0].cltv_expiry_delta, 46);
     }
 }
 

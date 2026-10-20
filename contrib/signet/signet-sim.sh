@@ -216,7 +216,9 @@ fallback_to_second_path() {
   inv=$(cli bob invoice 2000000 "fallback-$RANDOM" fallback | jq_ 'd["bolt11"]')
   r=$(cli alice -k barqpay invoice="$inv") || { echo "$r"; return 1; }
   local verdict
-  verdict=$(echo "$r" | jq_ '"ok" if d["status"]=="complete" and len(d["attempts"])>=2 and d["attempts"][0]["status"]=="failed" and d["route"][0]["id"]=="'"$FAUCET_NODE"'" else [(a["status"], [h["channel"] for h in a["route"]], a.get("error")) for a in d["attempts"]]')
+  # Either barq falls back in this call, or its scorer remembers that
+  # carol -> bob failed before and goes through the faucet at once.
+  verdict=$(echo "$r" | jq_ '"ok" if d["status"]=="complete" and d["route"][0]["id"]=="'"$FAUCET_NODE"'" and (len(d["attempts"])>=2 and d["attempts"][0]["status"]=="failed" or len(d["attempts"])==1) else [(a["status"], [h["channel"] for h in a["route"]], a.get("error")) for a in d["attempts"]]')
   [ "$verdict" = ok ] || { echo "$verdict"; return 1; }
 }
 
