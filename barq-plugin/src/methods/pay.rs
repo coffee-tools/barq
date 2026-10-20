@@ -504,6 +504,10 @@ impl Payment<'_> {
         let mut excluded = self.exclusions()?;
         let mut height = height;
         let mut policy_retried: Vec<u64> = vec![];
+        // Like xpay, a recipient ahead of our chain view earns one retry:
+        // on a slow node every attempt can see a newer block, and the
+        // failure would otherwise be retried until the attempts run out.
+        let mut height_retried = false;
         let mut last_failure: Option<Failure> = None;
 
         for attempt in 1..=max_attempts {
@@ -570,7 +574,10 @@ impl Payment<'_> {
                 groupid: self.groupid,
                 partid: attempt as u64,
             };
-            match self.send(&best.output.path, part, height).await? {
+            match self
+                .send(&best.output.path, part, height, !height_retried)
+                .await?
+            {
                 Outcome::Complete {
                     status,
                     first_hop_amount_msat,
@@ -638,6 +645,7 @@ impl Payment<'_> {
                                 ),
                             );
                             height = reported;
+                            height_retried = true;
                         }
                     }
                     last_failure = Some(failure);
@@ -872,7 +880,13 @@ impl Payment<'_> {
     }
 
     /// Build the onion for `path`, send it and wait for the result.
-    async fn send(&self, path: &Path, part: Part, height: u32) -> Result<Outcome, PluginError> {
+    async fn send(
+        &self,
+        path: &Path,
+        part: Part,
+        height: u32,
+        may_retry_height: bool,
+    ) -> Result<Outcome, PluginError> {
         let (state, invoice, node) = (self.state, self.invoice, self.node);
         // Core Lightning computes CLTVs relative to the next block.
         let onion = build_onion_hops(
@@ -953,7 +967,8 @@ impl Payment<'_> {
                     failure
                 );
                 Ok(Outcome::Failed(
-                    self.understand_failure(path, failure, error, height).await,
+                    self.understand_failure(path, failure, error, height, may_retry_height)
+                        .await,
                 ))
             }
         }
@@ -968,6 +983,7 @@ impl Payment<'_> {
         failure: cln::PaymentFailure,
         error: clightningrpc_common::errors::RpcError,
         height: u32,
+        may_retry_height: bool,
     ) -> Failure {
         let hash = &self.invoice.payment_hash;
         let raw = failure.raw_message.as_deref().and_then(|raw| {
@@ -1009,7 +1025,7 @@ impl Payment<'_> {
             .is_none_or(|p| p.at_recipient || p.in_blinded_path);
         let retry = match channel {
             _ if at_destination => match raw.as_deref().and_then(reported_height) {
-                Some(reported) if reported > height => Retry::Height(reported),
+                Some(reported) if may_retry_height && reported > height => Retry::Height(reported),
                 _ => Retry::Final,
             },
             Some(channel) if kind == FailureKind::Policy && policy_learned => {
