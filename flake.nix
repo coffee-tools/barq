@@ -12,25 +12,10 @@
       let
         pkgs = nixpkgs.legacyPackages.${system};
 
-        clightning = pkgs.clightning.overrideAttrs (oldAttrs: {
-          version = "master-62dd";
-          src = pkgs.fetchgit {
-            url = "https://github.com/ElementsProject/lightning";
-            rev = "f2551091ca3cc2e7b03a6d3766a851a025dbfd4d";
-            sha256 = "sha256-PdbHtMIc35zqv8dDX5TXWyzhcu2h1G/LzIyS9S1TCAQ=";
-            fetchSubmodules = true;
-          };
-          buildInputs = with pkgs; [ gmp libsodium sqlite zlib jq rPackages.GSED ];
-          postPatch = ''
-                    patchShebangs \
-                      tools/generate-wire.py \
-                      tools/update-mocks.sh \
-                      tools/mockup.sh \
-                      tools/fromschema.py \
-                      devtools/sql-rewrite.py
-                      '';
-          configureFlags = [ "--disable-rust" "--disable-valgrind" ];
-        });
+        # Core Lightning from nixpkgs (v26.06.9 at the locked revision):
+        # barq's `pay` hook needs v25.12 or later (rpc_command filters) and
+        # BOLT12 self-payments need injectpaymentonion (v24.11).
+        clightning = pkgs.clightning;
         # Our integration tests required the cln and bitcoind
         # so in this variable we declare everything that we need
         # for bitcoin and cln
@@ -51,7 +36,8 @@
             rustc
             cargo
             rustfmt
-            python3
+            # The test dependencies have no wheels for newer Pythons yet.
+            python312
             poetry
 
             openssl
@@ -62,7 +48,9 @@
             export RUST_BACKTRACE=1
             export PYTHON_KEYRING_BACKEND=keyring.backends.null.Keyring
 
-            cd tests/ && poetry env use $(which python) && poetry lock --no-update && poetry install -vvv && cd ..
+            # In a subshell so a failing step never leaves the shell in tests/.
+            # Poetry 2 dropped `lock --no-update`: `install` uses the lock file.
+            (cd tests && poetry env use "$(which python)" && poetry install -vvv)
           '';
         };
       }
