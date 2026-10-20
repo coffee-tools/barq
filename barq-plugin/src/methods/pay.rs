@@ -535,9 +535,10 @@ impl Payment<'_> {
         if self.to_ourselves() && invoice.kind == InvoiceKind::Bolt11 {
             return self.pay_ourselves(record).await;
         }
-        if let Some((payinfo, path)) = introduced_by_us(invoice, node, self.send_msat) {
+        if let Some((payinfo, path)) = introduced_by_us(&invoice.payee, node, self.send_msat, true)
+        {
             return self
-                .pay_as_introduction(payinfo, path, height, record)
+                .pay_as_introduction(&payinfo, &path, height, 1, record)
                 .await;
         }
         if node.first_hops.is_empty() {
@@ -598,6 +599,16 @@ impl Payment<'_> {
                 }
             }
             let Some(best) = ranking.best().cloned() else {
+                // LDK skips blinded paths that start at our node: once
+                // nothing else is left, try one of those ourselves.
+                let remaining = without_paths(&invoice.payee, &failed_blinded);
+                if let Some((payinfo, path)) =
+                    introduced_by_us(&remaining, node, self.send_msat, false)
+                {
+                    return self
+                        .pay_as_introduction(&payinfo, &path, height, attempt as u64, record)
+                        .await;
+                }
                 if let Some(failure) = last_failure {
                     record.event(log::Level::Info, "no other route left");
                     return Err(failure.give_up(&record.attempts));
@@ -860,6 +871,7 @@ impl Payment<'_> {
         payinfo: &BlindedPayInfo,
         blinded: &BlindedPath,
         height: u32,
+        partid: u64,
         record: &mut PaymentRecord,
     ) -> Result<json::Value, PluginError> {
         record.event(
@@ -900,7 +912,7 @@ impl Payment<'_> {
                 destination_msat: self.send_msat,
                 part: Part {
                     groupid: self.groupid,
-                    partid: 1,
+                    partid,
                 },
                 invstring: &self.request.invoice,
                 label: self.request.label.as_deref(),
@@ -1148,14 +1160,16 @@ fn onion_json(onion: &barq_common::onion::OnionHops) -> Vec<OnionHopJson> {
         .collect()
 }
 
-/// The blinded path to use when every path of a BOLT12 invoice starts at
-/// our own node, which LDK cannot route from.
-fn introduced_by_us<'a>(
-    invoice: &'a DecodedInvoice,
+/// A blinded path of `payee` that starts at our own node, which LDK cannot
+/// route from. With `only_ours`, only when every path starts at our node
+/// (otherwise LDK routes over the others first).
+fn introduced_by_us(
+    payee: &Payee,
     node: &NodeContext,
     amount_msat: u64,
-) -> Option<(&'a BlindedPayInfo, &'a BlindedPath)> {
-    let Payee::Blinded { paths, .. } = &invoice.payee else {
+    only_ours: bool,
+) -> Option<(BlindedPayInfo, BlindedPath)> {
+    let Payee::Blinded { paths, .. } = payee else {
         return None;
     };
     let ours = |path: &BlindedPath| match &path.introduction_node {
@@ -1169,12 +1183,15 @@ fn introduced_by_us<'a>(
             })
         }
     };
-    if paths.is_empty() || !paths.iter().all(|(_, path)| ours(path)) {
+    if only_ours && !paths.iter().all(|(_, path)| ours(path)) {
         return None;
     }
+    let paths: Vec<&(BlindedPayInfo, BlindedPath)> =
+        paths.iter().filter(|(_, path)| ours(path)).collect();
     // A path whose HTLC limits fit the amount, the cheapest first.
     paths
         .iter()
+        .copied()
         .filter(|(payinfo, _)| {
             payinfo.htlc_minimum_msat <= amount_msat && amount_msat <= payinfo.htlc_maximum_msat
         })
@@ -1182,8 +1199,8 @@ fn introduced_by_us<'a>(
             payinfo.fee_base_msat as u64
                 + amount_msat.saturating_mul(payinfo.fee_proportional_millionths as u64) / 1_000_000
         })
-        .or(paths.first())
-        .map(|(payinfo, path)| (payinfo, path))
+        .or(paths.first().copied())
+        .map(|(payinfo, path)| (payinfo.clone(), path.clone()))
 }
 
 /// `payee` without the blinded paths that already failed.
@@ -1371,6 +1388,39 @@ mod tests {
         assert_eq!(points(&without_paths(&payee, &[])), vec![a, b]);
         assert_eq!(points(&without_paths(&payee, &[a])), vec![b]);
         assert!(points(&without_paths(&payee, &[a, b])).is_empty());
+    }
+
+    #[test]
+    fn our_blinded_paths_are_used_last() {
+        let us = pk("02eec7245d6b7d2ccb30380bfbe2a3648cd7a942653f5aa340edcea1f283686619");
+        let other = pk("0324653eac434488002cc06bbfb7f10fe18991e35f9fe4302dbea6d2353dc0ab1c");
+        let node = NodeContext {
+            our_id: us,
+            network: barq_common::Network::Regtest,
+            blockheight: 100,
+            first_hops: vec![],
+        };
+        let mixed = Payee::Blinded {
+            paths: vec![blinded(other), blinded(us)],
+            features: None,
+        };
+        // While another path is left, LDK routes over it first.
+        assert!(introduced_by_us(&mixed, &node, 1000, true).is_none());
+        // Once only ours can be tried, barq takes it.
+        let (_, path) = introduced_by_us(&mixed, &node, 1000, false).unwrap();
+        assert_eq!(path.introduction_node, IntroductionNode::NodeId(us));
+        // A path whose limits do not fit the amount is not taken.
+        let mut small = blinded(us);
+        small.0.htlc_maximum_msat = 10;
+        let tight = Payee::Blinded {
+            paths: vec![small, blinded(other)],
+            features: None,
+        };
+        let (payinfo, _) = introduced_by_us(&tight, &node, 1000, false).unwrap();
+        assert_eq!(
+            payinfo.htlc_maximum_msat, 10,
+            "falls back to the only path of ours"
+        );
     }
 
     #[test]
