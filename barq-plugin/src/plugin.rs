@@ -1,8 +1,10 @@
 //! Barq Plugin implementation
 
+use std::collections::HashSet;
+use std::future::Future;
 use std::path::PathBuf;
 use std::str::FromStr;
-use std::sync::Arc;
+use std::sync::{Arc, Mutex};
 use std::time::Duration;
 
 use clightningrpc_common::errors::RpcError;
@@ -15,6 +17,7 @@ use clightningrpc::LightningRPC;
 use clightningrpc_plugin::commands::RPCCommand;
 use clightningrpc_plugin::errors::PluginError;
 use clightningrpc_plugin::plugin::Plugin;
+use clightningrpc_plugin::responder::Responder;
 use clightningrpc_plugin_macros::{plugin, rpc_method};
 
 use barq_common::algorithms::external::ExternalStrategy;
@@ -61,6 +64,8 @@ pub(crate) struct State {
     pub(crate) pay_hook_registered: bool,
     /// A strategy implemented by an external program (issue #12).
     pub(crate) external_strategy: Option<ExternalStrategy>,
+    /// Payment hashes barq is paying right now.
+    pub(crate) in_flight: Arc<Mutex<HashSet<String>>>,
 }
 
 impl State {
@@ -83,12 +88,39 @@ impl State {
             override_pay: false,
             pay_hook_registered: false,
             external_strategy: None,
+            in_flight: Arc::new(Mutex::new(HashSet::new())),
         }
     }
 
     /// Drive `future` to completion from a synchronous cln4rust handler.
     pub fn block_on<F: std::future::Future>(&self, future: F) -> F::Output {
         self.runtime.block_on(future)
+    }
+
+    /// Serve a request on its own thread and answer `responder` when the
+    /// future built by `serve` completes, so the plugin goes on serving
+    /// other requests in the meantime.
+    ///
+    /// A thread rather than a runtime task: a payment also runs synchronous
+    /// work (route finding, an external strategy program for up to its
+    /// timeout) that would hold one of the runtime's few workers.
+    pub fn respond_later<F, Fut>(&self, responder: Responder, name: &str, serve: F)
+    where
+        F: FnOnce(State) -> Fut + Send + 'static,
+        Fut: Future<Output = Result<Value, PluginError>>,
+    {
+        let state = self.clone();
+        let spawned = std::thread::Builder::new()
+            .name(format!("barq-{name}"))
+            .spawn(move || {
+                let future = serve(state.clone());
+                responder.respond(state.block_on(future));
+            });
+        // The closure, and the responder with it, is dropped on failure:
+        // the request is answered with an error.
+        if let Err(err) = spawned {
+            log::warn!("cannot start a thread for `{name}`: {err}");
+        }
     }
 
     pub fn store(&self) -> Result<Arc<PaymentStore>, PluginError> {
@@ -141,8 +173,6 @@ pub fn build_plugin() -> anyhow::Result<Plugin<State>> {
         dynamic: true,
         notification: [],
         methods: [
-            barq_pay,
-            rpay,
             barq_route_info,
             barq_sync_gossip,
             barq_inspect,
@@ -210,6 +240,20 @@ pub fn build_plugin() -> anyhow::Result<Plugin<State>> {
              the routing graph at startup, for testing strategies on large topologies.",
             false,
         );
+    // Payments take seconds to minutes: they answer when they complete
+    // and do not hold up other requests.
+    plugin.add_rpc_method(
+        "barqpay",
+        "",
+        "Pay a BOLT11 or BOLT12 invoice routing with LDK",
+        BarqPay,
+    );
+    plugin.add_rpc_method(
+        "rpay",
+        "",
+        "Pay an invoice with barq through pay's interface: same parameters, result and error codes as pay",
+        RPay,
+    );
     plugin.register_notification("shutdown", OnShutdown);
     // The hook must be declared in the manifest, before options are known:
     // register it whenever lightningd supports the `pay` filter, and let
@@ -356,20 +400,22 @@ fn on_init(plugin: &mut Plugin<State>) -> Value {
     serde_json::json!({})
 }
 
-#[rpc_method(
-    rpc_name = "barqpay",
-    description = "Pay a BOLT11 or BOLT12 invoice routing with LDK"
-)]
-pub fn barq_pay(plugin: &mut Plugin<State>, request: Value) -> Result<Value, PluginError> {
-    methods::pay::barq_pay(plugin, request)
+#[derive(Clone)]
+struct BarqPay;
+
+impl RPCCommand<State> for BarqPay {
+    fn call_deferred(&self, plugin: &mut Plugin<State>, request: Value, responder: Responder) {
+        methods::pay::barq_pay(plugin, request, responder)
+    }
 }
 
-#[rpc_method(
-    rpc_name = "rpay",
-    description = "Pay an invoice with barq through pay's interface: same parameters, result and error codes as pay"
-)]
-pub fn rpay(plugin: &mut Plugin<State>, request: Value) -> Result<Value, PluginError> {
-    methods::pay_hook::rpay(plugin, request)
+#[derive(Clone)]
+struct RPay;
+
+impl RPCCommand<State> for RPay {
+    fn call_deferred(&self, plugin: &mut Plugin<State>, request: Value, responder: Responder) {
+        methods::pay_hook::rpay(plugin, request, responder)
+    }
 }
 
 #[rpc_method(
