@@ -160,8 +160,7 @@ barq sends every payment in one part (no multi-part payments). Two
 details differ from the legacy `pay`: an `exclude` entry `scid/direction`
 rules out both directions of the channel, and a `description_hash` invoice
 paid without `description` is paid without the check, as xpay (the default
-`pay` since v26) does. barq answers one command at a time, so a second
-payment waits for the first to finish. How close
+`pay` since v26) does. How close
 this is to `pay` is checked by running Core Lightning's own `pay` tests with
 barq serving `pay`: see `tests/cln/`.
 

@@ -132,6 +132,28 @@ already_paid() {
   # One payment in listsendpays, as part 1 of group 1, like pay makes it.
   cli alice listsendpays "$inv" | jq_ '"ok" if [(p["groupid"], p.get("partid")) for p in d["payments"]]==[(1, 1)] else d' | grep -q ok
 }
+concurrent_payments() {
+  # Two payments in flight at once, and barq still answers other commands.
+  local a b out1 out2 t0 t_inspect p1 p2
+  a=$(cli bob invoice 6000 "conc-a-$RANDOM" conc | jq_ 'd["bolt11"]')
+  b=$(cli bob invoice 7000 "conc-b-$RANDOM" conc | jq_ 'd["bolt11"]')
+  out1=$(mktemp); out2=$(mktemp)
+  t0=$SECONDS
+  cli alice rpay "$a" > "$out1" 2>&1 & p1=$!
+  cli alice rpay "$b" > "$out2" 2>&1 & p2=$!
+  sleep 1
+  cli alice barqinspect >/dev/null || { echo "barqinspect failed during payments"; return 1; }
+  t_inspect=$((SECONDS - t0))
+  wait $p1 $p2
+  local t_done=$((SECONDS - t0))
+  for f in "$out1" "$out2"; do
+    jq_ 'd["status"]' < "$f" | grep -q complete || { echo "payment failed: $(head -c 300 "$f")"; return 1; }
+  done
+  rm -f "$out1" "$out2"
+  echo "barqinspect after ${t_inspect}s, both payments after ${t_done}s"
+  # On a slow chain the payments take seconds: barqinspect must not wait for them.
+  [ "$t_inspect" -lt "$t_done" ] || [ "$t_done" -le 2 ]
+}
 history() {
   cli alice barqinspect | jq_ '"ok" if len(d["payments"])>=5 and any(p["status"]=="complete" for p in d["payments"]) and any(p["status"]=="failed" for p in d["payments"]) else d' | grep -q ok
 }
@@ -161,6 +183,7 @@ checks() {
   check "fee limit fails with 206" fee_limit
   check "self-payment completes" self_pay
   check "already paid invoice answers with the same payment, grouped like pay" already_paid
+  check "two payments at once while barq answers other commands" concurrent_payments
   check "barqinspect records successes and failures" history
   check "pay is served by barq" pay_takeover
   say "== $PASS passed, $FAIL failed${FAILED:+: ${FAILED[*]}}"
