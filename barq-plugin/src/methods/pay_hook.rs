@@ -47,6 +47,17 @@ pub fn parse_version(version: &str) -> Option<(u32, u32)> {
     Some((major, minor))
 }
 
+/// Whether the running lightningd (`LIGHTNINGD_VERSION`) is at least
+/// `min`. An unreadable version (a build without tags) counts as older, so
+/// optional parameters are left out rather than refused.
+pub fn lightningd_at_least(min: (u32, u32)) -> bool {
+    std::env::var("LIGHTNINGD_VERSION")
+        .ok()
+        .as_deref()
+        .and_then(parse_version)
+        .is_some_and(|v| v >= min)
+}
+
 /// Whether this lightningd accepts an `rpc_command` hook filtered to `pay`.
 pub fn supports_filters(version: Option<&str>) -> bool {
     version
@@ -121,8 +132,8 @@ const DEFAULT_MAXFEEPERCENT: f64 = 0.5;
 const DEFAULT_EXEMPTFEE_MSAT: u64 = 5000;
 
 /// Translate `pay`'s parameters (by name or by position) into a `barqpay`
-/// request. `riskfactor`, `retry_for`, `maxdelay` and `localinvreqid`
-/// have no barq equivalent and are accepted but ignored.
+/// request. `riskfactor`, `retry_for` and `maxdelay` have no barq
+/// equivalent and are accepted but ignored.
 pub fn barqpay_request(params: &Value) -> Result<BarqPayRequest, String> {
     let get = |name: &str| -> Option<Value> {
         let value = match params {
@@ -180,6 +191,14 @@ pub fn barqpay_request(params: &Value) -> Result<BarqPayRequest, String> {
         Value::String(d) => d,
         other => other.to_string(),
     });
+    let localinvreqid = get("localinvreqid")
+        .map(|id| {
+            id.as_str()
+                .filter(|id| id.len() == 64 && id.chars().all(|c| c.is_ascii_hexdigit()))
+                .map(str::to_owned)
+                .ok_or(format!("invalid localinvreqid {id}"))
+        })
+        .transpose()?;
     Ok(BarqPayRequest {
         invoice,
         amount_msat: amount("amount_msat")?,
@@ -201,6 +220,7 @@ pub fn barqpay_request(params: &Value) -> Result<BarqPayRequest, String> {
         exclude,
         partial_msat: amount("partial_msat")?,
         description,
+        localinvreqid,
     })
 }
 
@@ -352,6 +372,17 @@ mod tests {
         assert_eq!(by_position.invoice, "lnbc2");
         assert_eq!(by_position.amount_msat, Some(5000));
         assert_eq!(by_position.label, None);
+
+        let id = "ab".repeat(32);
+        let with_id = barqpay_request(&json!({"bolt11": "lni1", "localinvreqid": id})).unwrap();
+        assert_eq!(with_id.localinvreqid.as_deref(), Some(id.as_str()));
+        assert!(barqpay_request(&json!({"bolt11": "lni1", "localinvreqid": "nothex"})).is_err());
+        // pay's fee limit defaults, unless maxfee is given.
+        assert_eq!(with_id.maxfeepercent, Some(0.5));
+        assert_eq!(with_id.exemptfee_msat, Some(5000));
+        let capped = barqpay_request(&json!({"bolt11": "x", "maxfee": 7})).unwrap();
+        assert_eq!((capped.maxfee_msat, capped.maxfeepercent), (Some(7), None));
+        assert!(barqpay_request(&json!({"bolt11": "x", "maxfee": 7, "exemptfee": 1})).is_err());
 
         assert!(barqpay_request(&json!({})).is_err());
         assert!(barqpay_request(&json!({"bolt11": "x", "amount_msat": "bad"})).is_err());

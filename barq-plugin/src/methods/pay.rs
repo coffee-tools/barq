@@ -81,6 +81,10 @@ pub struct BarqPayRequest {
     /// The description a `description_hash` invoice commits to.
     #[serde(default)]
     pub description: Option<String>,
+    /// The `invoice_request` we created for this BOLT12 invoice: lets
+    /// Core Lightning refuse a second payment for a single-use one.
+    #[serde(default)]
+    pub localinvreqid: Option<String>,
 }
 
 impl BarqPayRequest {
@@ -431,6 +435,9 @@ enum Retry {
     /// The recipient is at this (higher) block height: try again with CLTVs
     /// computed from it.
     Height(u32),
+    /// The payment failed inside this blinded path (its blinding point):
+    /// try the invoice's other blinded paths.
+    BlindedPath(PublicKey),
 }
 
 /// A failed attempt, with what it tells us about the route.
@@ -483,10 +490,12 @@ impl Payment<'_> {
         }
         // A BOLT11 invoice of ours is paid with `sendpay` like `pay` does;
         // a BOLT12 one reaches us through its blinded path, below.
+        // `exclude` can rule out the payer or the payee whatever the route.
+        let mut excluded = self.exclusions()?;
         if self.to_ourselves() && invoice.kind == InvoiceKind::Bolt11 {
             return self.pay_ourselves(record).await;
         }
-        if let Some((payinfo, path)) = introduced_by_us(invoice, node) {
+        if let Some((payinfo, path)) = introduced_by_us(invoice, node, self.send_msat) {
             return self
                 .pay_as_introduction(payinfo, path, height, record)
                 .await;
@@ -501,8 +510,10 @@ impl Payment<'_> {
             .unwrap_or(self.state.max_attempts)
             .max(1);
         let budget = request.fee_budget(self.send_msat);
-        let mut excluded = self.exclusions()?;
         let mut height = height;
+        // Blinded paths (by blinding point) that failed inside: the next
+        // attempt routes over the invoice's other paths, like `pay`.
+        let mut failed_blinded: Vec<PublicKey> = vec![];
         let mut policy_retried: Vec<u64> = vec![];
         // Like xpay, a recipient ahead of our chain view earns one retry:
         // on a slow node every attempt can see a newer block, and the
@@ -513,7 +524,7 @@ impl Payment<'_> {
         for attempt in 1..=max_attempts {
             let input = RouteInput {
                 src_pubkey: node.our_id,
-                payee: invoice.payee.clone(),
+                payee: without_paths(&invoice.payee, &failed_blinded),
                 amount_msat: self.send_msat,
                 final_cltv_delta: invoice.final_cltv_delta,
                 first_hops: node.first_hops.clone(),
@@ -635,6 +646,17 @@ impl Payment<'_> {
                                     scid::to_cln(channel)
                                 ),
                             );
+                        }
+                        Retry::BlindedPath(blinding_point) => {
+                            record.event(
+                                log::Level::Warn,
+                                format!(
+                                    "attempt {attempt} failed inside a blinded path: {}; \
+                                     trying the invoice's other paths",
+                                    failure.message
+                                ),
+                            );
+                            failed_blinded.push(blinding_point);
                         }
                         Retry::Height(reported) => {
                             record.event(
@@ -776,6 +798,7 @@ impl Payment<'_> {
                 invstring: &self.request.invoice,
                 label: self.request.label.as_deref(),
                 description: self.request.description.as_deref(),
+                localinvreqid: self.request.localinvreqid.as_deref(),
                 part: Part {
                     groupid: self.groupid,
                     partid: 0,
@@ -805,6 +828,19 @@ impl Payment<'_> {
         );
         let invoice = self.invoice;
         let path = path_from_introduction(self.node.our_id, payinfo, blinded, self.send_msat);
+        // The recipient sets the blinded path's fees: hold them to the limit.
+        let fee_msat = path.hops[0].fee_msat;
+        if let Some(budget) = self.request.fee_budget(self.send_msat) {
+            if fee_msat > budget {
+                return Err(fail(
+                    PAY_ROUTE_TOO_EXPENSIVE,
+                    format!(
+                        "Failed: Could not find route without excessive cost: the blinded \
+                         path costs {fee_msat} msat in fees, the limit is {budget} msat"
+                    ),
+                ));
+            }
+        }
         let onion = build_onion_hops(
             &path,
             self.amount_msat,
@@ -829,6 +865,7 @@ impl Payment<'_> {
                 invstring: &self.request.invoice,
                 label: self.request.label.as_deref(),
                 destination: invoice.destination.as_deref(),
+                localinvreqid: self.request.localinvreqid.as_deref(),
             },
         )
         .await?;
@@ -936,6 +973,7 @@ impl Payment<'_> {
                 invstring: Some(&self.request.invoice),
                 label: self.request.label.as_deref(),
                 description: self.request.description.as_deref(),
+                localinvreqid: self.request.localinvreqid.as_deref(),
             },
         )
         .await;
@@ -1011,7 +1049,7 @@ impl Payment<'_> {
             log::info!("payment {hash} failed at {point:?}: {kind:?}");
             if let Some(update) = &update {
                 policy_learned =
-                    learn_channel_update(self.state, self.ctx, hash, point, update).await;
+                    learn_channel_update(self.state, self.ctx, hash, path, point, update).await;
             }
             if kind.penalise_liquidity() {
                 if let Some(scid) = point.penalised_channel() {
@@ -1023,9 +1061,16 @@ impl Payment<'_> {
         let at_destination = point
             .as_ref()
             .is_none_or(|p| p.at_recipient || p.in_blinded_path);
+        let blinding_point = path.blinded_tail.as_ref().map(|t| t.blinding_point);
+        let in_blinded = point.as_ref().is_some_and(|p| p.in_blinded_path);
         let retry = match channel {
             _ if at_destination => match raw.as_deref().and_then(reported_height) {
                 Some(reported) if may_retry_height && reported > height => Retry::Height(reported),
+                // The recipient does not know the payment: no path helps.
+                _ if failcode == Some(INCORRECT_OR_UNKNOWN_PAYMENT_DETAILS) => Retry::Final,
+                // A hop of this blinded path failed (its errors are masked):
+                // another of the invoice's paths may work.
+                _ if in_blinded => blinding_point.map_or(Retry::Final, Retry::BlindedPath),
                 _ => Retry::Final,
             },
             Some(channel) if kind == FailureKind::Policy && policy_learned => {
@@ -1068,6 +1113,7 @@ fn onion_json(onion: &barq_common::onion::OnionHops) -> Vec<OnionHopJson> {
 fn introduced_by_us<'a>(
     invoice: &'a DecodedInvoice,
     node: &NodeContext,
+    amount_msat: u64,
 ) -> Option<(&'a BlindedPayInfo, &'a BlindedPath)> {
     let Payee::Blinded { paths, .. } = &invoice.payee else {
         return None;
@@ -1086,7 +1132,33 @@ fn introduced_by_us<'a>(
     if paths.is_empty() || !paths.iter().all(|(_, path)| ours(path)) {
         return None;
     }
-    paths.first().map(|(payinfo, path)| (payinfo, path))
+    // A path whose HTLC limits fit the amount, the cheapest first.
+    paths
+        .iter()
+        .filter(|(payinfo, _)| {
+            payinfo.htlc_minimum_msat <= amount_msat && amount_msat <= payinfo.htlc_maximum_msat
+        })
+        .min_by_key(|(payinfo, _)| {
+            payinfo.fee_base_msat as u64
+                + amount_msat.saturating_mul(payinfo.fee_proportional_millionths as u64) / 1_000_000
+        })
+        .or(paths.first())
+        .map(|(payinfo, path)| (payinfo, path))
+}
+
+/// `payee` without the blinded paths that already failed.
+fn without_paths(payee: &Payee, failed: &[PublicKey]) -> Payee {
+    match payee {
+        Payee::Blinded { paths, features } if !failed.is_empty() => Payee::Blinded {
+            paths: paths
+                .iter()
+                .filter(|(_, path)| !failed.contains(&path.blinding_point))
+                .cloned()
+                .collect(),
+            features: features.clone(),
+        },
+        other => other.clone(),
+    }
 }
 
 /// Learn the policy a forwarding node attached to its failure: apply the
@@ -1099,6 +1171,7 @@ async fn learn_channel_update(
     state: &State,
     ctx: &NetworkContext,
     payment_hash: &str,
+    path: &Path,
     point: &FailurePoint,
     carried: &CarriedUpdate,
 ) -> bool {
@@ -1111,6 +1184,23 @@ async fn learn_channel_update(
             point.channel.map(scid::to_cln)
         );
         return false;
+    }
+    // It must be the direction the failing node forwards in: from the
+    // erring node to the next hop. Direction 0 starts at the lesser node id.
+    let next = path
+        .hops
+        .iter()
+        .find(|hop| hop.short_channel_id == contents.short_channel_id)
+        .map(|hop| hop.pubkey);
+    if let (Some(from), Some(to)) = (point.node, next) {
+        let expected = u8::from(from.serialize() > to.serialize());
+        if contents.flags & 1 != expected {
+            log::warn!(
+                "payment {payment_hash}: ignoring a channel_update for the other direction of \
+                 {channel}"
+            );
+            return false;
+        }
     }
     let applied = match ctx.apply_channel_update(&carried.update) {
         Ok(()) => {
@@ -1174,4 +1264,94 @@ fn enrich_failure(
         code
     };
     (code, Some(data))
+}
+
+#[cfg(test)]
+mod tests {
+    use std::str::FromStr;
+
+    use barq_common::ldk::blinded_path::BlindedHop;
+    use barq_common::ldk::ln::features::BlindedHopFeatures;
+
+    use super::*;
+
+    fn pk(hex: &str) -> PublicKey {
+        PublicKey::from_str(hex).unwrap()
+    }
+
+    fn blinded(point: PublicKey) -> (BlindedPayInfo, BlindedPath) {
+        let payinfo = BlindedPayInfo {
+            fee_base_msat: 1,
+            fee_proportional_millionths: 1,
+            htlc_minimum_msat: 1,
+            htlc_maximum_msat: u64::MAX,
+            cltv_expiry_delta: 40,
+            features: BlindedHopFeatures::empty(),
+        };
+        let path = BlindedPath {
+            introduction_node: IntroductionNode::NodeId(point),
+            blinding_point: point,
+            blinded_hops: vec![BlindedHop {
+                blinded_node_id: point,
+                encrypted_payload: vec![1],
+            }],
+        };
+        (payinfo, path)
+    }
+
+    #[test]
+    fn failed_blinded_paths_are_left_out() {
+        let a = pk("02eec7245d6b7d2ccb30380bfbe2a3648cd7a942653f5aa340edcea1f283686619");
+        let b = pk("0324653eac434488002cc06bbfb7f10fe18991e35f9fe4302dbea6d2353dc0ab1c");
+        let payee = Payee::Blinded {
+            paths: vec![blinded(a), blinded(b)],
+            features: None,
+        };
+        let points = |p: &Payee| match p {
+            Payee::Blinded { paths, .. } => paths
+                .iter()
+                .map(|(_, p)| p.blinding_point)
+                .collect::<Vec<_>>(),
+            _ => unreachable!(),
+        };
+        assert_eq!(points(&without_paths(&payee, &[])), vec![a, b]);
+        assert_eq!(points(&without_paths(&payee, &[a])), vec![b]);
+        assert!(points(&without_paths(&payee, &[a, b])).is_empty());
+    }
+
+    #[test]
+    fn fee_budget_like_pay() {
+        let request =
+            |maxfee: Option<u64>, percent: Option<f64>, exempt: Option<u64>| BarqPayRequest {
+                invoice: String::new(),
+                amount_msat: None,
+                strategy: None,
+                use_rapid_gossip_sync: false,
+                label: None,
+                max_attempts: None,
+                maxfee_msat: maxfee,
+                maxfeepercent: percent,
+                exemptfee_msat: exempt,
+                exclude: vec![],
+                partial_msat: None,
+                description: None,
+                localinvreqid: None,
+            };
+        // barqpay without limits: none.
+        assert_eq!(request(None, None, None).fee_budget(1_000_000), None);
+        // 0.5% of 10^6 msat is 5000, the exemption is also 5000.
+        assert_eq!(
+            request(None, Some(0.5), Some(5000)).fee_budget(1_000_000),
+            Some(5000)
+        );
+        assert_eq!(
+            request(None, Some(0.5), Some(5000)).fee_budget(10_000_000),
+            Some(50_000)
+        );
+        assert_eq!(
+            request(None, Some(0.5), Some(5000)).fee_budget(100),
+            Some(5000)
+        );
+        assert_eq!(request(Some(7), None, None).fee_budget(10_000_000), Some(7));
+    }
 }

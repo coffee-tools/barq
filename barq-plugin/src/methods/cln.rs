@@ -185,6 +185,7 @@ pub struct SendOnionRequest<'a> {
     /// The description a `description_hash` invoice commits to, shown by
     /// `listsendpays` and `listpays`.
     pub description: Option<&'a str>,
+    pub localinvreqid: Option<&'a str>,
 }
 
 /// Where an attempt sits in `listsendpays`: like `pay`, every attempt of
@@ -208,10 +209,16 @@ pub async fn sendonion_raw(
         "payment_hash": req.payment_hash,
         "shared_secrets": req.shared_secrets,
         "amount_msat": req.amount_msat,
-        "total_amount_msat": req.total_amount_msat,
         "partid": req.part.partid,
         "groupid": req.part.groupid,
     });
+    // Only a partial payment needs it, and lightningd knows it since v25.05.
+    if req.total_amount_msat != req.amount_msat {
+        payload["total_amount_msat"] = json!(req.total_amount_msat);
+    }
+    if let Some(id) = req.localinvreqid {
+        payload["localinvreqid"] = Value::String(id.to_owned());
+    }
     if let Some(destination) = req.destination {
         payload["destination"] = Value::String(destination.to_owned());
     }
@@ -346,6 +353,7 @@ pub struct SelfPayRequest<'a> {
     pub invstring: &'a str,
     pub label: Option<&'a str>,
     pub description: Option<&'a str>,
+    pub localinvreqid: Option<&'a str>,
     pub part: Part,
 }
 
@@ -368,6 +376,9 @@ pub async fn selfpay(state: &State, req: SelfPayRequest<'_>) -> Result<WaitSendP
     }
     if let Some(description) = req.description {
         payload["description"] = Value::String(description.to_owned());
+    }
+    if let Some(id) = req.localinvreqid {
+        payload["localinvreqid"] = Value::String(id.to_owned());
     }
     // A self-payment completes (or fails) right away.
     match state.call::<_, SendPayStatus>("sendpay", payload).await {
@@ -400,6 +411,7 @@ pub struct InjectRequest<'a> {
     pub invstring: &'a str,
     pub label: Option<&'a str>,
     pub destination: Option<&'a str>,
+    pub localinvreqid: Option<&'a str>,
 }
 
 /// `injectpaymentonion` blocks until the payment completes. On failure
@@ -424,8 +436,16 @@ pub async fn injectpaymentonion(
     if let Some(label) = req.label {
         payload["label"] = Value::String(label.to_owned());
     }
-    if let Some(destination) = req.destination {
+    // `destination` is known to injectpaymentonion since v26.06; older
+    // versions refuse unknown parameters.
+    if let Some(destination) = req
+        .destination
+        .filter(|_| crate::methods::pay_hook::lightningd_at_least((26, 6)))
+    {
         payload["destination"] = Value::String(destination.to_owned());
+    }
+    if let Some(id) = req.localinvreqid {
+        payload["localinvreqid"] = Value::String(id.to_owned());
     }
     #[derive(Debug, Deserialize)]
     struct Injected {
