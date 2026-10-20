@@ -167,9 +167,71 @@ checks() {
   [ "$FAIL" -eq 0 ]
 }
 
+
+# --- the public network: alice and bob also have channels with the
+# faucet's LND node, so bob is reachable over two independent paths.
+FAUCET_NODE=02465ed5be53d04fde66c9418ff14a5f2267723810176c9212b722e542dc1afb1b
+FAUCET_ADDR=$FAUCET_NODE@45.79.52.207:9735
+MUTINYNET_CLI=${MUTINYNET_CLI:-$HOME/.cargo/bin/mutinynet-cli}
+
+channel_normal_with() { # NODE PUBKEY
+  cli "$1" listpeerchannels "$2" | jq_ '"ok" if any(c["state"]=="CHANNELD_NORMAL" for c in d["channels"]) else ""' | grep -q ok
+}
+# alice's gossip knows faucet -> bob, so barq has a second path to bob.
+barq_knows_faucet_bob() {
+  cli alice barqsyncgossip >/dev/null 2>&1
+  cli alice -k listchannels source="$FAUCET_NODE" | jq_ '"ok" if any(c["destination"]=="'"$(id bob)"'" for c in d["channels"]) else ""' | grep -q ok
+}
+
+setup_public() {
+  say "== setup: public network through the faucet node"
+  cli alice connect "$FAUCET_ADDR" >/dev/null
+  cli bob connect "$FAUCET_ADDR" >/dev/null
+  wait_for 3600 "faucet -> alice CHANNELD_NORMAL" channel_normal_with alice "$FAUCET_NODE" || exit 1
+  wait_for 3600 "faucet -> bob CHANNELD_NORMAL" channel_normal_with bob "$FAUCET_NODE" || exit 1
+  wait_for 3600 "alice's gossip to learn faucet -> bob" barq_knows_faucet_bob || exit 1
+  say "public channels ready"
+}
+
+pay_public_node() {
+  # An invoice of the faucet's own node, paid over the public channel.
+  local inv r
+  inv=$("$MUTINYNET_CLI" bolt11 5 2>&1 | tail -1)
+  case "$inv" in lntbs*) ;; *) echo "no faucet invoice: $inv"; return 1 ;; esac
+  r=$(cli alice -k barqpay invoice="$inv") || { echo "$r"; return 1; }
+  echo "$r" | jq_ '"ok" if d["status"]=="complete" and d["destination"]=="'"$FAUCET_NODE"'" else d' | grep -q ok
+}
+fallback_to_second_path() {
+  # Drain carol -> bob, then pay bob a small amount: fees then decide, the
+  # cheap path through carol fails at carol, and barq completes through the
+  # faucet in the same call. (For large amounts barq's scorer already
+  # prefers the faucet's bigger channels.)
+  local spend inv r
+  spend=$(cli carol listpeerchannels "$(id bob)" | jq_ 'max(c["spendable_msat"] for c in d["channels"])')
+  spend=$(( spend - 500000 ))
+  if [ "$spend" -gt 0 ]; then
+    inv=$(cli bob invoice "$spend" "drain-$RANDOM" drain | jq_ 'd["bolt11"]')
+    cli carol pay "$inv" >/dev/null || { echo "could not drain carol -> bob"; return 1; }
+  fi
+  inv=$(cli bob invoice 2000000 "fallback-$RANDOM" fallback | jq_ 'd["bolt11"]')
+  r=$(cli alice -k barqpay invoice="$inv") || { echo "$r"; return 1; }
+  local verdict
+  verdict=$(echo "$r" | jq_ '"ok" if d["status"]=="complete" and len(d["attempts"])>=2 and d["attempts"][0]["status"]=="failed" and d["route"][0]["id"]=="'"$FAUCET_NODE"'" else [(a["status"], [h["channel"] for h in a["route"]], a.get("error")) for a in d["attempts"]]')
+  [ "$verdict" = ok ] || { echo "$verdict"; return 1; }
+}
+
+checks_public() {
+  say "== public network checks"
+  check "pay the faucet node over the public channel" pay_public_node
+  check "fallback to the second path after a failure mid-route" fallback_to_second_path
+  say "== $PASS passed, $FAIL failed${FAILED:+: ${FAILED[*]}}"
+  [ "$FAIL" -eq 0 ]
+}
+
 case "${1:-all}" in
   all) setup && checks ;;
   checks) checks ;;
   setup) setup ;;
-  *) echo "usage: $0 [all|setup|checks]"; exit 1 ;;
+  public) setup_public && checks_public ;;
+  *) echo "usage: $0 [all|setup|checks|public]"; exit 1 ;;
 esac
