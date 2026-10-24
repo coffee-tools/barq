@@ -94,8 +94,7 @@ impl ExternalStrategy {
         if let Some(dir) = &self.workdir {
             command.current_dir(dir);
         }
-        let mut child = command
-            .spawn()
+        let mut child = spawn_retrying_busy(&mut command)
             .with_context(|| format!("cannot run {}", self.program.display()))?;
         {
             let mut stdin = child.stdin.take().expect("stdin is piped");
@@ -232,6 +231,28 @@ impl Strategy for ExternalStrategy {
     }
 }
 
+/// `ETXTBSY`: the program file is still open for writing somewhere.
+const ETXTBSY: i32 = 26;
+
+/// Spawn `command`, retrying for a short while when the kernel refuses to
+/// execute the program because its file is still open for writing
+/// ("Text file busy"). That happens when the program was just written and
+/// another thread of this process forked in between: the child holds the
+/// writing descriptor until it execs. barq's own tests write scripts while
+/// others run, and an external strategy can be replaced while barq runs.
+fn spawn_retrying_busy(command: &mut Command) -> std::io::Result<std::process::Child> {
+    let mut tries = 0;
+    loop {
+        match command.spawn() {
+            Err(err) if err.raw_os_error() == Some(ETXTBSY) && tries < 50 => {
+                tries += 1;
+                std::thread::sleep(Duration::from_millis(10));
+            }
+            other => return other,
+        }
+    }
+}
+
 #[cfg(test)]
 mod tests {
     use std::os::unix::fs::PermissionsExt;
@@ -246,6 +267,26 @@ mod tests {
         std::fs::write(&path, format!("#!/bin/sh\n{body}\n")).unwrap();
         std::fs::set_permissions(&path, std::fs::Permissions::from_mode(0o755)).unwrap();
         path
+    }
+
+    /// Executing a file still open for writing fails with ETXTBSY on
+    /// Linux: the retrying spawn waits for the writer to finish.
+    #[cfg(target_os = "linux")]
+    #[test]
+    fn spawn_waits_for_a_busy_program() {
+        let path = script("busy.sh", "exit 0");
+        let writer = std::fs::OpenOptions::new().write(true).open(&path).unwrap();
+
+        let err = Command::new(&path).spawn().unwrap_err();
+        assert_eq!(err.raw_os_error(), Some(ETXTBSY));
+
+        let release = std::thread::spawn(move || {
+            std::thread::sleep(Duration::from_millis(100));
+            drop(writer);
+        });
+        let mut child = spawn_retrying_busy(&mut Command::new(&path)).unwrap();
+        assert!(child.wait().unwrap().success());
+        release.join().unwrap();
     }
 
     fn line() -> SimulatedNetwork {
