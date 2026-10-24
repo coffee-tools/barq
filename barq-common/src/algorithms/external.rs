@@ -269,6 +269,26 @@ mod tests {
         path
     }
 
+    /// Executing a file still open for writing fails with ETXTBSY on
+    /// Linux: the retrying spawn waits for the writer to finish.
+    #[cfg(target_os = "linux")]
+    #[test]
+    fn spawn_waits_for_a_busy_program() {
+        let path = script("busy.sh", "exit 0");
+        let writer = std::fs::OpenOptions::new().write(true).open(&path).unwrap();
+
+        let err = Command::new(&path).spawn().unwrap_err();
+        assert_eq!(err.raw_os_error(), Some(ETXTBSY));
+
+        let release = std::thread::spawn(move || {
+            std::thread::sleep(Duration::from_millis(100));
+            drop(writer);
+        });
+        let mut child = spawn_retrying_busy(&mut Command::new(&path)).unwrap();
+        assert!(child.wait().unwrap().success());
+        release.join().unwrap();
+    }
+
     fn line() -> SimulatedNetwork {
         SimulatedNetwork::line(3, 1_000_000, Policy::default()).unwrap()
     }
