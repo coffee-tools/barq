@@ -94,8 +94,7 @@ impl ExternalStrategy {
         if let Some(dir) = &self.workdir {
             command.current_dir(dir);
         }
-        let mut child = command
-            .spawn()
+        let mut child = spawn_retrying_busy(&mut command)
             .with_context(|| format!("cannot run {}", self.program.display()))?;
         {
             let mut stdin = child.stdin.take().expect("stdin is piped");
@@ -229,6 +228,28 @@ impl Strategy for ExternalStrategy {
         Ok(RouteOutput {
             path: route_from_response(input, &response)?,
         })
+    }
+}
+
+/// `ETXTBSY`: the program file is still open for writing somewhere.
+const ETXTBSY: i32 = 26;
+
+/// Spawn `command`, retrying for a short while when the kernel refuses to
+/// execute the program because its file is still open for writing
+/// ("Text file busy"). That happens when the program was just written and
+/// another thread of this process forked in between: the child holds the
+/// writing descriptor until it execs. barq's own tests write scripts while
+/// others run, and an external strategy can be replaced while barq runs.
+fn spawn_retrying_busy(command: &mut Command) -> std::io::Result<std::process::Child> {
+    let mut tries = 0;
+    loop {
+        match command.spawn() {
+            Err(err) if err.raw_os_error() == Some(ETXTBSY) && tries < 50 => {
+                tries += 1;
+                std::thread::sleep(Duration::from_millis(10));
+            }
+            other => return other,
+        }
     }
 }
 
