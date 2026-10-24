@@ -3,6 +3,7 @@ not hold up the others, nor barq's other commands."""
 import os
 import re
 import subprocess
+import time
 
 import pytest
 
@@ -102,3 +103,74 @@ def test_pay_hook_while_another_payment_is_pending(node_factory, executor):
 
     assert slow_pay.result(TIMEOUT)["status"] == "complete"
     assert only_one(l3.rpc.listinvoices("slow")["invoices"])["status"] == "paid"
+
+
+@pytest.mark.skipif(cln_version() < (25, 12),
+                    reason="rpc_command hook filters need Core Lightning v25.12 or later")
+def test_many_payments_at_once(node_factory):
+    """Stress: 24 payments (BOLT11 and BOLT12, through rpay and the pay
+    hook) started together, plus 4 racing payments of one invoice, while
+    barqinspect is queried. Every payment completes exactly once."""
+    from concurrent.futures import ThreadPoolExecutor
+
+    l1, l2, l3 = node_factory.line_graph(
+        3,
+        opts=[{"plugin": barq_binary, "barq-override-pay": True}, {}, {}],
+        wait_for_announce=True,
+    )
+    if "xpay-handle-pay" in l1.rpc.listconfigs()["configs"]:
+        l1.rpc.setconfig("xpay-handle-pay", False)
+
+    jobs = []
+    for i in range(12):
+        inv = l3.rpc.invoice(1000 + i, f"b11-{i}", "stress")["bolt11"]
+        jobs.append(("rpay", {"bolt11": inv}))
+    for i in range(6):
+        offer = l3.rpc.offer(f"{2000 + i}msat", f"stress offer {i}")["bolt12"]
+        # Core Lightning rate-limits onion messages: space the fetches out.
+        time.sleep(1)
+        inv = l1.rpc.fetchinvoice(offer=offer)["invoice"]
+        jobs.append(("rpay", {"bolt11": inv}))
+    for i in range(6):
+        inv = l3.rpc.invoice(3000 + i, f"hook-{i}", "stress")["bolt11"]
+        jobs.append(("pay", {"bolt11": inv}))
+    race = l3.rpc.invoice(5000, "race", "stress")
+
+    with ThreadPoolExecutor(max_workers=40) as pool:
+        payments = [pool.submit(l1.rpc.call, method, params) for method, params in jobs]
+        racing = [pool.submit(l1.rpc.call, "rpay", {"bolt11": race["bolt11"]}) for _ in range(4)]
+        # barq keeps answering while the payments are in flight.
+        inspections = [pool.submit(l1.rpc.call, "barqinspect", {}) for _ in range(5)]
+        results = [p.result(TIMEOUT) for p in payments]
+        for i in inspections:
+            assert "payments" in i.result(TIMEOUT)
+        race_results, race_errors = [], []
+        for r in racing:
+            try:
+                race_results.append(r.result(TIMEOUT))
+            except RpcError as err:
+                race_errors.append(err.error)
+
+    assert all(r["status"] == "complete" for r in results), results
+    hashes = {r["payment_hash"] for r in results}
+    assert len(hashes) == len(jobs)
+
+    # The racing payments: one paid it; the others were refused as in
+    # progress or answered with that same payment.
+    assert race_results, race_errors
+    assert len({r["payment_preimage"] for r in race_results}) == 1
+    assert all(e["code"] == PAY_IN_PROGRESS for e in race_errors), race_errors
+    assert only_one(l3.rpc.listinvoices("race")["invoices"])["status"] == "paid"
+    hashes.add(race["payment_hash"])
+
+    # Exactly one attempt per payment, part 1 of group 1, like pay makes it.
+    for h in hashes:
+        parts = l1.rpc.listsendpays(payment_hash=h)["payments"]
+        assert [(p["groupid"], p.get("partid"), p["status"]) for p in parts] == [(1, 1, "complete")], parts
+
+    # barq's history has every payment, completed, once.
+    recorded = l1.rpc.call("barqinspect", {"limit": 100})["payments"]
+    complete = [p["payment_hash"] for p in recorded if p["status"] == "complete"]
+    assert sorted(set(complete)) == sorted(hashes)
+    assert len(complete) == len(hashes)
+    assert all(i["status"] == "paid" for i in l3.rpc.listinvoices()["invoices"])
