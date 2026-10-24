@@ -20,6 +20,22 @@ pub enum StrategyKind {
     /// LDK path finding with the probabilistic scorer.
     #[default]
     Probabilistic,
+    /// A program speaking barq's external strategy protocol (issue #12).
+    External,
+}
+
+impl StrategyKind {
+    /// Every built-in strategy, in tie-break order. `External` is added
+    /// after them when one is configured.
+    pub const ALL: [StrategyKind; 2] = [StrategyKind::Direct, StrategyKind::Probabilistic];
+
+    pub fn name(&self) -> &'static str {
+        match self {
+            StrategyKind::Direct => "direct",
+            StrategyKind::Probabilistic => "probabilistic",
+            StrategyKind::External => "external",
+        }
+    }
 }
 
 impl FromStr for StrategyKind {
@@ -29,6 +45,7 @@ impl FromStr for StrategyKind {
         match s.to_lowercase().as_str() {
             "direct" => Ok(Self::Direct),
             "probabilistic" | "ldk" => Ok(Self::Probabilistic),
+            "external" => Ok(Self::External),
             _ => anyhow::bail!("Strategy `{s}` not found"),
         }
     }
@@ -106,6 +123,12 @@ pub struct RouteInput {
     pub first_hops: Vec<FirstHop>,
     /// Unix timestamp after which the invoice is no longer valid.
     pub expiry_time: Option<u64>,
+    /// Force this strategy instead of letting barq rank every applicable
+    /// one (issue #10).
+    pub strategy: Option<StrategyKind>,
+    /// Channels that failed in earlier attempts of this payment: routes
+    /// must avoid them.
+    pub excluded_channels: Vec<u64>,
 }
 
 /// Represents the output of a routing strategy: a single LDK path from us

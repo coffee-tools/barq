@@ -10,11 +10,12 @@ use clightningrpc_plugin::error;
 use clightningrpc_plugin::errors::PluginError;
 
 use barq_common::secp256k1::PublicKey;
-use barq_common::strategy::{FirstHop, RouteInput, RouteOutput, StrategyKind};
+use barq_common::selection::{self, NamedStrategy, Ranking};
+use barq_common::strategy::{FirstHop, RouteInput, StrategyKind};
 use barq_common::Network;
 
 use crate::methods::cln;
-use crate::methods::pay::{build_strategy, strategy_name};
+use crate::methods::pay::build_strategy;
 use crate::plugin::State;
 
 /// Our node, as seen right before routing.
@@ -49,22 +50,30 @@ pub async fn load(state: &State) -> Result<NodeContext, PluginError> {
     })
 }
 
-/// Check that strategy `kind` applies to `input` and compute its route.
-pub fn route_with(
-    state: &State,
-    kind: StrategyKind,
-    input: &RouteInput,
-) -> Result<RouteOutput, PluginError> {
-    let strategy = build_strategy(state, kind)?;
-    if !strategy.can_apply(input).map_err(|e| error!("{e}"))? {
+/// Every built-in strategy, in tie-break order (direct first: it never
+/// pays fees).
+pub fn strategies(state: &State) -> Result<Vec<NamedStrategy>, PluginError> {
+    let mut kinds = StrategyKind::ALL.to_vec();
+    if state.external_strategy.is_some() {
+        kinds.push(StrategyKind::External);
+    }
+    kinds
+        .into_iter()
+        .map(|kind| {
+            Ok(NamedStrategy::new(
+                kind.name(),
+                build_strategy(state, kind)?,
+            ))
+        })
+        .collect()
+}
+
+/// Rank the routes every applicable strategy proposes for `input`.
+pub fn rank(state: &State, input: &RouteInput) -> Result<Ranking, PluginError> {
+    if input.strategy == Some(StrategyKind::External) && state.external_strategy.is_none() {
         return Err(error!(
-            "Strategy `{}` cannot route this payment",
-            strategy_name(kind)
+            "No external strategy configured: set `barq-external-strategy`"
         ));
     }
-    let output = strategy.route(input).map_err(|err| error!("{err}"))?;
-    if output.path.hops.is_empty() {
-        return Err(error!("No route found to pay the invoice"));
-    }
-    Ok(output)
+    Ok(selection::rank(&strategies(state)?, input))
 }

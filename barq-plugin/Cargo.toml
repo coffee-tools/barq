@@ -13,12 +13,15 @@ anyhow = { workspace = true }
 hex = "0.4"
 
 # Core lightning-rpc dependencies
-# cln4rust master: async RPC client (feature `async`) and the plugin EOF fix,
-# plus the incremental gossip_store reader.
-clightningrpc = { git = "https://github.com/laanwj/cln4rust.git", rev = "783504247bc447d847981a03f04f3184358d0c1e", features = ["async"] }
-clightningrpc-common = { git = "https://github.com/laanwj/cln4rust.git", rev = "783504247bc447d847981a03f04f3184358d0c1e", features = ["async"] }
-clightningrpc-plugin = { git = "https://github.com/laanwj/cln4rust.git", rev = "783504247bc447d847981a03f04f3184358d0c1e" }
-clightningrpc-plugin-macros = { git = "https://github.com/laanwj/cln4rust.git", rev = "783504247bc447d847981a03f04f3184358d0c1e" }
+# cln4rust master 7835042 plus hook filters (laanwj/cln4rust#148) and
+# deferred responses (branch claude/async-handlers, stacked on #148): async RPC
+# client (feature `async`), the plugin EOF fix, the incremental gossip_store
+# reader, `register_hook_with_filters` and `RPCCommand::call_deferred`. Move to
+# master once both merge.
+clightningrpc = { git = "https://github.com/laanwj/cln4rust.git", rev = "434c97180e329b6fd689c4066f9bae6ba9254b41", features = ["async"] }
+clightningrpc-common = { git = "https://github.com/laanwj/cln4rust.git", rev = "434c97180e329b6fd689c4066f9bae6ba9254b41", features = ["async"] }
+clightningrpc-plugin = { git = "https://github.com/laanwj/cln4rust.git", rev = "434c97180e329b6fd689c4066f9bae6ba9254b41" }
+clightningrpc-plugin-macros = { git = "https://github.com/laanwj/cln4rust.git", rev = "434c97180e329b6fd689c4066f9bae6ba9254b41" }
 tokio = { version = "1", features = ["rt-multi-thread", "macros", "time"] }
 
 # Barq dependencies

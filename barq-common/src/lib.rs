@@ -3,10 +3,14 @@
 //! sync) and the onion payload builder used to hand a route to Core
 //! Lightning.
 pub mod algorithms;
+pub mod failure;
 pub mod gossip_store;
+pub mod history;
 pub mod network;
 pub mod onion;
 pub mod scid;
+pub mod selection;
+pub mod simulation;
 pub mod strategy;
 
 pub use lampo_common::conf::Network;

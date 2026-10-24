@@ -1,0 +1,27 @@
+# Core Lightning tests that pass with Core Lightning's own `pay` and are
+# known to fail with barq serving `pay`, one `file::test  # reason` per line.
+# compare_junit.py fails the build on a barq failure that is not listed here,
+# and reports listed tests that pass again so they can be removed.
+
+# barq sends every payment as a single part (no multi-part payments).
+test_pay::test_mpp_adaptive  # needs MPP: no single route carries the amount
+
+# `listpays` is served by xpay, which reports "pending" only for payments xpay
+# itself has in flight. Between two barq attempts every part is failed, so
+# these tests, which poll listpays while barq retries, see "failed".
+test_pay::test_pay_retry  # listpays shows failed between barq's attempts
+test_pay::test_pay_avoid_low_fee_chan  # listpays shows failed between barq's attempts (timing dependent)
+
+# barq learns from failures across payments.
+test_pay::test_pay_error_update_fees  # second payment needs 1 attempt, not 2: barq kept the fee update
+
+# The test matches xpay's wording of a routing failure.
+test_pay::test_pay_exclude_node  # xpay's route hint failure message
+test_pay::test_setchannel_routing  # xpay's htlc_maximum_msat explanation
+test_pay::test_unreachable_routehint  # xpay's "no connection" message
+test_xpay::test_xpay_takeover  # xpay's "Redirecting pay->xpay" log
+test_xpay::test_xpay_takeover_null_parms  # xpay's "Redirecting pay->xpay" log
+test_xpay::test_xpay_user_layers  # askrene layers only steer xpay
+
+# LDK adds a random CLTV offset to every route, like pay's shadow routing.
+test_xpay::test_xpay_twohop_bug  # checks the exact HTLC CLTV

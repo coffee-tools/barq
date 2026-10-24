@@ -65,6 +65,9 @@ impl LDKRoutingStrategy {
         // Core Lightning `sendonion` sends one HTLC per call; keep the
         // route single-path until multi-part payments are wired in.
         params.max_path_count = 1;
+        params
+            .previously_failed_channels
+            .extend(input.excluded_channels.iter().copied());
         Ok(params)
     }
 
@@ -124,6 +127,7 @@ impl Strategy for LDKRoutingStrategy {
             anyhow::bail!("No usable channel to route the payment from");
         }
         let payment_params = Self::payment_parameters(input)?;
+        let max_total_cltv = payment_params.max_total_cltv_expiry_delta;
         let route_params =
             RouteParameters::from_payment_params_and_value(payment_params, input.amount_msat);
 
@@ -154,9 +158,10 @@ impl Strategy for LDKRoutingStrategy {
             .map_err(|e| anyhow::anyhow!("Failed to find route: {}", e.err))?
         };
 
-        let Some(path) = route.paths.into_iter().next() else {
+        let Some(mut path) = route.paths.into_iter().next() else {
             anyhow::bail!("LDK returned a route without paths");
         };
+        one_hop_blinded_cltv(&mut path, &input.payee, max_total_cltv)?;
         log::info!(
             "ldk routing: {} hop(s), {} msat fee, blinded tail: {}",
             path.hops.len(),
@@ -164,6 +169,146 @@ impl Strategy for LDKRoutingStrategy {
             path.blinded_tail.is_some()
         );
         Ok(RouteOutput { path })
+    }
+}
+
+/// LDK routes to a one-hop blinded path (the recipient is its own
+/// introduction node) with a CLTV delta of 0 for the final hop: it takes
+/// such paths as stand-ins whose payinfo is a placeholder. Core Lightning
+/// puts its minimum final CLTV there and enforces it ("Expiry cltv too
+/// soon"), so the path's `cltv_expiry_delta` is added to the final hop.
+///
+/// LDK capped its random shadow offset assuming a delta of 0, so the
+/// offset is trimmed to keep the path within `max_total_cltv`; a path whose
+/// own delta alone exceeds it is refused.
+pub fn one_hop_blinded_cltv(
+    path: &mut lampo_common::ldk::routing::router::Path,
+    payee: &Payee,
+    max_total_cltv: u32,
+) -> Result<()> {
+    let Payee::Blinded { paths, .. } = payee else {
+        return Ok(());
+    };
+    let Some(tail) = path.blinded_tail.as_ref().filter(|t| t.hops.len() == 1) else {
+        return Ok(());
+    };
+    let Some((payinfo, _)) = paths
+        .iter()
+        .find(|(_, blinded)| blinded.blinding_point == tail.blinding_point)
+    else {
+        return Ok(());
+    };
+    let delta = payinfo.cltv_expiry_delta as u32;
+    let total: u32 = path.hops.iter().map(|h| h.cltv_expiry_delta).sum::<u32>() + delta;
+    let over = total.saturating_sub(max_total_cltv);
+    let shadow = tail.excess_final_cltv_expiry_delta;
+    if over > shadow {
+        anyhow::bail!(
+            "the blinded path's cltv_expiry_delta {delta} takes the route to {total} blocks, \
+             over the limit of {max_total_cltv}"
+        );
+    }
+    if let Some(tail) = path.blinded_tail.as_mut() {
+        tail.excess_final_cltv_expiry_delta -= over;
+    }
+    if let Some(last) = path.hops.last_mut() {
+        last.cltv_expiry_delta = last.cltv_expiry_delta - over + delta;
+    }
+    Ok(())
+}
+
+#[cfg(test)]
+mod one_hop_tests {
+    use std::str::FromStr;
+
+    use lampo_common::ldk::blinded_path::{BlindedHop, BlindedPath, IntroductionNode};
+    use lampo_common::ldk::ln::features::{BlindedHopFeatures, ChannelFeatures, NodeFeatures};
+    use lampo_common::ldk::offers::invoice::BlindedPayInfo;
+    use lampo_common::ldk::routing::router::{BlindedTail, Path, RouteHop};
+    use lampo_common::secp256k1::PublicKey;
+
+    use super::*;
+
+    fn pk(hex: &str) -> PublicKey {
+        PublicKey::from_str(hex).unwrap()
+    }
+
+    #[test]
+    fn one_hop_blinded_paths_get_their_cltv() {
+        let bob = pk("0324653eac434488002cc06bbfb7f10fe18991e35f9fe4302dbea6d2353dc0ab1c");
+        let point = pk("027f31ebc5462c1fdce1b737ecff52d37d75dea43ce11c74d25aa297165faa2007");
+        let payinfo = BlindedPayInfo {
+            fee_base_msat: 0,
+            fee_proportional_millionths: 0,
+            htlc_minimum_msat: 0,
+            htlc_maximum_msat: u64::MAX,
+            cltv_expiry_delta: 10,
+            features: BlindedHopFeatures::empty(),
+        };
+        let blinded = |hops: usize| BlindedPath {
+            introduction_node: IntroductionNode::NodeId(bob),
+            blinding_point: point,
+            blinded_hops: vec![
+                BlindedHop {
+                    blinded_node_id: point,
+                    encrypted_payload: vec![1],
+                };
+                hops
+            ],
+        };
+        let path = |shadow: u32, hops: usize| Path {
+            hops: vec![RouteHop {
+                pubkey: bob,
+                node_features: NodeFeatures::empty(),
+                short_channel_id: 1,
+                channel_features: ChannelFeatures::empty(),
+                fee_msat: 12_000,
+                // LDK's 0 for the one-hop path, plus its random offset.
+                cltv_expiry_delta: shadow,
+                maybe_announced_channel: true,
+            }],
+            blinded_tail: Some(BlindedTail {
+                hops: blinded(hops).blinded_hops,
+                blinding_point: point,
+                excess_final_cltv_expiry_delta: shadow,
+                final_value_msat: 12_000,
+            }),
+        };
+        let payee = |hops: usize| Payee::Blinded {
+            paths: vec![(payinfo.clone(), blinded(hops))],
+            features: None,
+        };
+
+        let mut one = path(6, 1);
+        one_hop_blinded_cltv(&mut one, &payee(1), 1008).unwrap();
+        assert_eq!(one.hops[0].cltv_expiry_delta, 16);
+        assert_eq!(
+            one.blinded_tail
+                .as_ref()
+                .unwrap()
+                .excess_final_cltv_expiry_delta,
+            6
+        );
+
+        // Longer paths already carry the payinfo's delta.
+        let mut two = path(46, 2);
+        one_hop_blinded_cltv(&mut two, &payee(2), 1008).unwrap();
+        assert_eq!(two.hops[0].cltv_expiry_delta, 46);
+
+        // The shadow offset gives way to the cap...
+        let mut capped = path(6, 1);
+        one_hop_blinded_cltv(&mut capped, &payee(1), 12).unwrap();
+        assert_eq!(capped.hops[0].cltv_expiry_delta, 12);
+        assert_eq!(
+            capped
+                .blinded_tail
+                .as_ref()
+                .unwrap()
+                .excess_final_cltv_expiry_delta,
+            2
+        );
+        // ...but a delta over the cap on its own is refused.
+        assert!(one_hop_blinded_cltv(&mut path(6, 1), &payee(1), 9).is_err());
     }
 }
 
@@ -217,6 +362,8 @@ mod tests {
                 is_public: true,
             }],
             expiry_time: None,
+            strategy: None,
+            excluded_channels: vec![],
         };
         let output = strategy.route(&input).unwrap();
         assert_eq!(output.path.hops.len(), 1);
@@ -252,6 +399,8 @@ mod tests {
                 is_public: true,
             }],
             expiry_time: None,
+            strategy: None,
+            excluded_channels: vec![],
         };
         assert!(strategy.route(&input).is_err());
     }

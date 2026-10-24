@@ -1,0 +1,262 @@
+#!/usr/bin/env bash
+# barq on Mutinynet, end to end: alice (barq) -> carol (router) -> bob (payee).
+#
+#   signet-sim.sh              wait for funds, open channels, run every check
+#   signet-sim.sh checks       only the payment checks (channels already open)
+#
+# alice and carol must hold Mutinynet coins (faucet.mutinynet.com). Each check
+# prints PASS or FAIL; the summary and exit status say whether barq paid,
+# failed and recorded payments as expected on the real signet.
+#
+# Env: CHANNEL_SAT (50000), MIN_FUNDS_SAT (60000), ROOT (~/barq-signet)
+set -uo pipefail
+
+ROOT=${ROOT:-$HOME/barq-signet}
+NODES=$ROOT/nodes.sh
+CHANNEL_SAT=${CHANNEL_SAT:-50000}
+MIN_FUNDS_SAT=${MIN_FUNDS_SAT:-60000}
+LOG=$ROOT/signet-sim.log
+PASS=0; FAIL=0; FAILED=()
+
+say() { echo "[$(date +%H:%M:%S)] $*" | tee -a "$LOG"; }
+cli() { "$NODES" cli "$@"; }
+jq_() { python3 -c "import json,sys;d=json.load(sys.stdin);print($1)"; }
+pass() { PASS=$((PASS + 1)); say "PASS $1"; }
+fail() { FAIL=$((FAIL + 1)); FAILED+=("$1"); say "FAIL $1: ${2:-}"; }
+# check NAME CMD...: CMD's exit status decides.
+check() { local name=$1; shift; local out; if out=$("$@" 2>&1); then pass "$name"; else fail "$name" "$(echo "$out" | tail -3 | tr '\n' ' ' | cut -c1-300)"; fi; }
+id() { cli "$1" getinfo | jq_ 'd["id"]'; }
+onchain_sat() { cli "$1" listfunds | jq_ 'sum(o["amount_msat"] for o in d["outputs"] if o["status"]=="confirmed")//1000'; }
+
+wait_for() { # SECONDS DESCRIPTION CMD...
+  local limit=$1 what=$2; shift 2
+  local start=$SECONDS
+  until "$@" >/dev/null 2>&1; do
+    [ $((SECONDS - start)) -gt "$limit" ] && { say "timed out after ${limit}s waiting for $what"; return 1; }
+    sleep 15
+  done
+}
+
+has_funds() { [ "$(onchain_sat alice)" -ge "$MIN_FUNDS_SAT" ] && [ "$(onchain_sat carol)" -ge "$MIN_FUNDS_SAT" ]; }
+channel_normal() { # FROM TO
+  cli "$1" listpeerchannels "$(id "$2")" | jq_ '"ok" if any(c["state"]=="CHANNELD_NORMAL" for c in d["channels"]) else ""' | grep -q ok
+}
+# alice's barq knows both channels, so it can route alice -> carol -> bob.
+barq_routes_to_bob() {
+  cli alice barqsyncgossip >/dev/null 2>&1
+  cli alice -k barqrouteinfo dest_pubkey="$(id bob)" amount_msat=10000 | jq_ 'len(d["route"])' | grep -q '^2$'
+}
+
+setup() {
+  say "== setup: alice $(id alice) carol $(id carol) bob $(id bob)"
+  wait_for 86400 "faucet coins on alice and carol (>= $MIN_FUNDS_SAT sat each)" has_funds || exit 1
+  say "funds: alice $(onchain_sat alice) sat, carol $(onchain_sat carol) sat"
+  local carol_addr bob_addr
+  carol_addr="$(id carol)@127.0.0.1:19848"; bob_addr="$(id bob)@127.0.0.1:19847"
+  cli alice connect "$carol_addr" >/dev/null
+  cli carol connect "$bob_addr" >/dev/null
+  channel_normal alice carol || cli alice fundchannel "$(id carol)" "$CHANNEL_SAT" | tee -a "$LOG"
+  channel_normal carol bob || cli carol fundchannel "$(id bob)" "$CHANNEL_SAT" | tee -a "$LOG"
+  # 3 confirmations at 30s blocks, then 6 for the announcements.
+  wait_for 1800 "alice -> carol CHANNELD_NORMAL" channel_normal alice carol || exit 1
+  wait_for 1800 "carol -> bob CHANNELD_NORMAL" channel_normal carol bob || exit 1
+  wait_for 3600 "barq to route alice -> carol -> bob" barq_routes_to_bob || exit 1
+  say "channels ready"
+}
+
+# --- the checks ----------------------------------------------------------
+
+expect_error() { # CODE NODE ARGS...
+  local code=$1; shift; local r
+  if r=$(cli "$@" 2>&1); then echo "unexpectedly succeeded: $r"; return 1; fi
+  echo "$r" | grep -q "\"code\": $code" || { echo "wrong error: $r"; return 1; }
+}
+
+bolt11_barqpay() {
+  local inv; inv=$(cli bob invoice 20000 "b11-$RANDOM" barq | jq_ 'd["bolt11"]')
+  local r; r=$(cli alice -k barqpay invoice="$inv") || { echo "$r"; return 1; }
+  echo "$r" | jq_ '"ok" if d["status"]=="complete" and len(d["route"])==2 and d["invoice_type"]=="bolt11" else d' | grep -q ok
+}
+bolt11_rpay() {
+  local inv; inv=$(cli bob invoice 15000 "rpay-$RANDOM" barq | jq_ 'd["bolt11"]')
+  local r; r=$(cli alice rpay "$inv") || { echo "$r"; return 1; }
+  echo "$r" | jq_ '"ok" if d["status"]=="complete" and d["parts"]>=1 and d["destination"] else d' | grep -q ok
+}
+bolt12_pay() {
+  local offer inv r
+  offer=$(cli bob offer 12000msat "barq bolt12 $RANDOM" | jq_ 'd["bolt12"]')
+  inv=$(cli alice fetchinvoice "$offer" | jq_ 'd["invoice"]') || return 1
+  r=$(cli alice rpay "$inv") || { echo "$r"; return 1; }
+  echo "$r" | jq_ '"ok" if d["status"]=="complete" else d' | grep -q ok
+}
+bolt12_any_amount() {
+  local offer inv r
+  offer=$(cli bob offer any "barq bolt12 any $RANDOM" | jq_ 'd["bolt12"]')
+  inv=$(cli alice fetchinvoice "$offer" 7000msat | jq_ 'd["invoice"]') || return 1
+  r=$(cli alice -k barqpay invoice="$inv") || { echo "$r"; return 1; }
+  echo "$r" | jq_ '"ok" if d["status"]=="complete" and d["invoice_type"]=="bolt12" and d["blinded_hops"]>=1 else d' | grep -q ok
+}
+bolt11_unknown_invoice() {
+  local label="gone-$RANDOM" inv
+  inv=$(cli bob invoice 10000 "$label" gone | jq_ 'd["bolt11"]')
+  cli bob delinvoice "$label" unpaid >/dev/null
+  expect_error 203 alice rpay "$inv"
+}
+bolt12_paid_twice_by_other() {
+  # Single-use offer: once paid, a second invoice for it fails at bob.
+  local offer i1 i2
+  offer=$(cli bob -k offer amount=9000msat description="single $RANDOM" single_use=true | jq_ 'd["bolt12"]') || return 1
+  i1=$(cli alice fetchinvoice "$offer" | jq_ 'd["invoice"]')
+  i2=$(cli alice fetchinvoice "$offer" | jq_ 'd["invoice"]')
+  cli alice rpay "$i1" >/dev/null || return 1
+  expect_error 203 alice rpay "$i2"
+}
+too_large() {
+  local inv; inv=$(cli bob invoice $((CHANNEL_SAT * 2000)) "big-$RANDOM" big | jq_ 'd["bolt11"]')
+  expect_error 205 alice rpay "$inv"
+}
+fee_limit() {
+  local inv; inv=$(cli bob invoice 10000 "fee-$RANDOM" fee | jq_ 'd["bolt11"]')
+  expect_error 206 alice -k rpay bolt11="$inv" maxfee=0msat
+}
+self_pay() {
+  local inv; inv=$(cli alice invoice 5000 "self-$RANDOM" self | jq_ 'd["bolt11"]')
+  cli alice rpay "$inv" | jq_ 'd["status"]' | grep -q complete
+}
+already_paid() {
+  local inv a b
+  inv=$(cli bob invoice 8000 "twice-$RANDOM" twice | jq_ 'd["bolt11"]')
+  a=$(cli alice rpay "$inv" | jq_ 'd["payment_preimage"]') || return 1
+  b=$(cli alice rpay "$inv" | jq_ 'd["payment_preimage"]') || return 1
+  [ "$a" = "$b" ] || return 1
+  # One payment in listsendpays, as part 1 of group 1, like pay makes it.
+  cli alice listsendpays "$inv" | jq_ '"ok" if [(p["groupid"], p.get("partid")) for p in d["payments"]]==[(1, 1)] else d' | grep -q ok
+}
+concurrent_payments() {
+  # Two payments in flight at once, and barq still answers other commands.
+  local a b out1 out2 t0 t_inspect p1 p2
+  a=$(cli bob invoice 6000 "conc-a-$RANDOM" conc | jq_ 'd["bolt11"]')
+  b=$(cli bob invoice 7000 "conc-b-$RANDOM" conc | jq_ 'd["bolt11"]')
+  out1=$(mktemp); out2=$(mktemp)
+  t0=$SECONDS
+  cli alice rpay "$a" > "$out1" 2>&1 & p1=$!
+  cli alice rpay "$b" > "$out2" 2>&1 & p2=$!
+  sleep 1
+  cli alice barqinspect >/dev/null || { echo "barqinspect failed during payments"; return 1; }
+  t_inspect=$((SECONDS - t0))
+  wait $p1 $p2
+  local t_done=$((SECONDS - t0))
+  for f in "$out1" "$out2"; do
+    jq_ 'd["status"]' < "$f" | grep -q complete || { echo "payment failed: $(head -c 300 "$f")"; return 1; }
+  done
+  rm -f "$out1" "$out2"
+  echo "barqinspect after ${t_inspect}s, both payments after ${t_done}s"
+  # On a slow chain the payments take seconds: barqinspect must not wait for them.
+  [ "$t_inspect" -lt "$t_done" ] || [ "$t_done" -le 2 ]
+}
+history() {
+  cli alice barqinspect | jq_ '"ok" if len(d["payments"])>=5 and any(p["status"]=="complete" for p in d["payments"]) and any(p["status"]=="failed" for p in d["payments"]) else d' | grep -q ok
+}
+pay_takeover() {
+  # Restart alice with barq serving `pay` (xpay's takeover off).
+  # The daemonized lightningd must not inherit check's output pipe, or
+  # check's command substitution never sees EOF.
+  "$NODES" stop alice >/dev/null 2>&1 < /dev/null; sleep 5
+  BARQ_OVERRIDE_PAY=1 "$NODES" start alice >/dev/null 2>&1 < /dev/null || return 1
+  sleep 10
+  cli alice connect "$(id carol)@127.0.0.1:19848" >/dev/null
+  wait_for 600 "alice -> carol reconnected" channel_normal alice carol || return 1
+  local inv; inv=$(cli bob invoice 11000 "takeover-$RANDOM" takeover | jq_ 'd["bolt11"]')
+  cli alice pay "$inv" | jq_ 'd["status"]' | grep -q complete || return 1
+  grep -q "serving \`pay\` with barq" "$ROOT/nodes/alice/log"
+}
+
+checks() {
+  say "== checks"
+  check "BOLT11 barqpay over two hops" bolt11_barqpay
+  check "BOLT11 rpay in pay's format" bolt11_rpay
+  check "BOLT12 rpay of a fixed-amount offer" bolt12_pay
+  check "BOLT12 barqpay of an any-amount offer" bolt12_any_amount
+  check "BOLT11 unknown invoice fails with 203" bolt11_unknown_invoice
+  check "BOLT12 used single-use offer fails with 203" bolt12_paid_twice_by_other
+  check "unroutable amount fails with 205" too_large
+  check "fee limit fails with 206" fee_limit
+  check "self-payment completes" self_pay
+  check "already paid invoice answers with the same payment, grouped like pay" already_paid
+  check "two payments at once while barq answers other commands" concurrent_payments
+  check "barqinspect records successes and failures" history
+  check "pay is served by barq" pay_takeover
+  say "== $PASS passed, $FAIL failed${FAILED:+: ${FAILED[*]}}"
+  [ "$FAIL" -eq 0 ]
+}
+
+
+# --- the public network: alice and bob also have channels with the
+# faucet's LND node, so bob is reachable over two independent paths.
+FAUCET_NODE=02465ed5be53d04fde66c9418ff14a5f2267723810176c9212b722e542dc1afb1b
+FAUCET_ADDR=$FAUCET_NODE@45.79.52.207:9735
+MUTINYNET_CLI=${MUTINYNET_CLI:-$HOME/.cargo/bin/mutinynet-cli}
+
+channel_normal_with() { # NODE PUBKEY
+  cli "$1" listpeerchannels "$2" | jq_ '"ok" if any(c["state"]=="CHANNELD_NORMAL" for c in d["channels"]) else ""' | grep -q ok
+}
+# alice's gossip knows faucet -> bob, so barq has a second path to bob.
+barq_knows_faucet_bob() {
+  cli alice barqsyncgossip >/dev/null 2>&1
+  cli alice -k listchannels source="$FAUCET_NODE" | jq_ '"ok" if any(c["destination"]=="'"$(id bob)"'" for c in d["channels"]) else ""' | grep -q ok
+}
+
+setup_public() {
+  say "== setup: public network through the faucet node"
+  cli alice connect "$FAUCET_ADDR" >/dev/null
+  cli bob connect "$FAUCET_ADDR" >/dev/null
+  wait_for 3600 "faucet -> alice CHANNELD_NORMAL" channel_normal_with alice "$FAUCET_NODE" || exit 1
+  wait_for 3600 "faucet -> bob CHANNELD_NORMAL" channel_normal_with bob "$FAUCET_NODE" || exit 1
+  wait_for 3600 "alice's gossip to learn faucet -> bob" barq_knows_faucet_bob || exit 1
+  say "public channels ready"
+}
+
+pay_public_node() {
+  # An invoice of the faucet's own node, paid over the public channel.
+  local inv r
+  inv=$("$MUTINYNET_CLI" bolt11 5 2>&1 | tail -1)
+  case "$inv" in lntbs*) ;; *) echo "no faucet invoice: $inv"; return 1 ;; esac
+  r=$(cli alice -k barqpay invoice="$inv") || { echo "$r"; return 1; }
+  echo "$r" | jq_ '"ok" if d["status"]=="complete" and d["destination"]=="'"$FAUCET_NODE"'" else d' | grep -q ok
+}
+fallback_to_second_path() {
+  # Drain carol -> bob, then pay bob a small amount: fees then decide, the
+  # cheap path through carol fails at carol, and barq completes through the
+  # faucet in the same call. (For large amounts barq's scorer already
+  # prefers the faucet's bigger channels.)
+  local spend inv r
+  spend=$(cli carol listpeerchannels "$(id bob)" | jq_ 'max(c["spendable_msat"] for c in d["channels"])')
+  spend=$(( spend - 500000 ))
+  if [ "$spend" -gt 0 ]; then
+    inv=$(cli bob invoice "$spend" "drain-$RANDOM" drain | jq_ 'd["bolt11"]')
+    cli carol pay "$inv" >/dev/null || { echo "could not drain carol -> bob"; return 1; }
+  fi
+  inv=$(cli bob invoice 2000000 "fallback-$RANDOM" fallback | jq_ 'd["bolt11"]')
+  r=$(cli alice -k barqpay invoice="$inv") || { echo "$r"; return 1; }
+  local verdict
+  # Either barq falls back in this call, or its scorer remembers that
+  # carol -> bob failed before and goes through the faucet at once.
+  verdict=$(echo "$r" | jq_ '"ok" if d["status"]=="complete" and d["route"][0]["id"]=="'"$FAUCET_NODE"'" and (len(d["attempts"])>=2 and d["attempts"][0]["status"]=="failed" or len(d["attempts"])==1) else [(a["status"], [h["channel"] for h in a["route"]], a.get("error")) for a in d["attempts"]]')
+  [ "$verdict" = ok ] || { echo "$verdict"; return 1; }
+}
+
+checks_public() {
+  say "== public network checks"
+  check "pay the faucet node over the public channel" pay_public_node
+  check "fallback to the second path after a failure mid-route" fallback_to_second_path
+  say "== $PASS passed, $FAIL failed${FAILED:+: ${FAILED[*]}}"
+  [ "$FAIL" -eq 0 ]
+}
+
+case "${1:-all}" in
+  all) setup && checks ;;
+  checks) checks ;;
+  setup) setup ;;
+  public) setup_public && checks_public ;;
+  *) echo "usage: $0 [all|setup|checks|public]"; exit 1 ;;
+esac

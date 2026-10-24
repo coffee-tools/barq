@@ -1,8 +1,10 @@
 //! Barq Plugin implementation
 
+use std::collections::HashSet;
+use std::future::Future;
 use std::path::PathBuf;
 use std::str::FromStr;
-use std::sync::Arc;
+use std::sync::{Arc, Mutex};
 use std::time::Duration;
 
 use clightningrpc_common::errors::RpcError;
@@ -15,17 +17,28 @@ use clightningrpc::LightningRPC;
 use clightningrpc_plugin::commands::RPCCommand;
 use clightningrpc_plugin::errors::PluginError;
 use clightningrpc_plugin::plugin::Plugin;
+use clightningrpc_plugin::responder::Responder;
 use clightningrpc_plugin_macros::{plugin, rpc_method};
 
+use barq_common::algorithms::external::ExternalStrategy;
+use barq_common::history::PaymentStore;
 use barq_common::network::{default_rgs_url, NetworkContext};
+use barq_common::simulation::GraphSpec;
 use barq_common::Network;
 
 use crate::methods;
+use crate::methods::pay_hook::{self, PayHook};
 
 /// Plugin options.
 pub const OPT_RGS_URL: &str = "barq-rgs-url";
 pub const OPT_SYNC_INTERVAL: &str = "barq-sync-interval";
 pub const OPT_CLN_GOSSIP: &str = "barq-cln-gossip";
+pub const OPT_MAX_ATTEMPTS: &str = "barq-max-attempts";
+pub const OPT_OVERRIDE_PAY: &str = "barq-override-pay";
+pub const OPT_EXTERNAL_STRATEGY: &str = "barq-external-strategy";
+pub const OPT_EXTERNAL_TIMEOUT: &str = "barq-external-strategy-timeout";
+/// Developer option: load a mocked graph (JSON `GraphSpec`) at startup.
+pub const OPT_DEV_SIMULATED_GRAPH: &str = "barq-dev-simulated-graph";
 
 /// Barq Plugin State
 ///
@@ -41,6 +54,18 @@ pub(crate) struct State {
     pub(crate) ctx: Option<Arc<NetworkContext>>,
     /// Runs the async RPC calls and the background gossip sync.
     pub(crate) runtime: Arc<Runtime>,
+    /// Default number of routes `barqpay` tries.
+    pub(crate) max_attempts: u32,
+    /// The payment history.
+    pub(crate) store: Option<Arc<PaymentStore>>,
+    /// Serve Core Lightning's `pay` command (issue #36).
+    pub(crate) override_pay: bool,
+    /// Whether lightningd supports the filtered `rpc_command` hook.
+    pub(crate) pay_hook_registered: bool,
+    /// A strategy implemented by an external program (issue #12).
+    pub(crate) external_strategy: Option<ExternalStrategy>,
+    /// Payment hashes barq is paying right now.
+    pub(crate) in_flight: Arc<Mutex<HashSet<String>>>,
 }
 
 impl State {
@@ -58,12 +83,50 @@ impl State {
                     .build()
                     .expect("building the tokio runtime"),
             ),
+            max_attempts: 3,
+            store: None,
+            override_pay: false,
+            pay_hook_registered: false,
+            external_strategy: None,
+            in_flight: Arc::new(Mutex::new(HashSet::new())),
         }
     }
 
     /// Drive `future` to completion from a synchronous cln4rust handler.
     pub fn block_on<F: std::future::Future>(&self, future: F) -> F::Output {
         self.runtime.block_on(future)
+    }
+
+    /// Serve a request on its own thread and answer `responder` when the
+    /// future built by `serve` completes, so the plugin goes on serving
+    /// other requests in the meantime.
+    ///
+    /// A thread rather than a runtime task: a payment also runs synchronous
+    /// work (route finding, an external strategy program for up to its
+    /// timeout) that would hold one of the runtime's few workers.
+    pub fn respond_later<F, Fut>(&self, responder: Responder, name: &str, serve: F)
+    where
+        F: FnOnce(State) -> Fut + Send + 'static,
+        Fut: Future<Output = Result<Value, PluginError>>,
+    {
+        let state = self.clone();
+        let spawned = std::thread::Builder::new()
+            .name(format!("barq-{name}"))
+            .spawn(move || {
+                let future = serve(state.clone());
+                responder.respond(state.block_on(future));
+            });
+        // The closure, and the responder with it, is dropped on failure:
+        // the request is answered with an error.
+        if let Err(err) = spawned {
+            log::warn!("cannot start a thread for `{name}`: {err}");
+        }
+    }
+
+    pub fn store(&self) -> Result<Arc<PaymentStore>, PluginError> {
+        self.store
+            .clone()
+            .ok_or_else(|| PluginError::new(-1, "barq is not initialized yet", None))
     }
 
     pub fn ctx(&self) -> Result<Arc<NetworkContext>, PluginError> {
@@ -110,9 +173,9 @@ pub fn build_plugin() -> anyhow::Result<Plugin<State>> {
         dynamic: true,
         notification: [],
         methods: [
-            barq_pay,
             barq_route_info,
             barq_sync_gossip,
+            barq_inspect,
         ],
         hooks: [],
     };
@@ -138,8 +201,77 @@ pub fn build_plugin() -> anyhow::Result<Plugin<State>> {
             Some("true".to_owned()),
             "Feed the LDK graph with the Core Lightning gossip_store.",
             false,
+        )
+        .add_opt(
+            OPT_MAX_ATTEMPTS,
+            "int",
+            Some("3".to_owned()),
+            "How many routes barqpay tries before giving up; each failure excludes the \
+             failing channel and re-ranks the strategies.",
+            false,
+        )
+        .add_opt(
+            OPT_OVERRIDE_PAY,
+            "bool",
+            Some("false".to_owned()),
+            "Serve Core Lightning's `pay` command with barq (needs Core Lightning v25.12 or later).",
+            false,
+        )
+        .add_opt(
+            OPT_EXTERNAL_STRATEGY,
+            "string",
+            None,
+            "Path to a program implementing barq's external strategy protocol; it is \
+             ranked as the `external` strategy.",
+            false,
+        )
+        .add_opt(
+            OPT_EXTERNAL_TIMEOUT,
+            "int",
+            Some("30".to_owned()),
+            "Seconds the external strategy program may take to answer.",
+            false,
+        )
+        .add_opt(
+            OPT_DEV_SIMULATED_GRAPH,
+            "string",
+            None,
+            "Developer option: path to a JSON graph spec of mocked channels loaded into \
+             the routing graph at startup, for testing strategies on large topologies.",
+            false,
         );
+    // Payments take seconds to minutes: they answer when they complete
+    // and do not hold up other requests.
+    plugin.add_rpc_method(
+        "barqpay",
+        "",
+        "Pay a BOLT11 or BOLT12 invoice routing with LDK",
+        BarqPay,
+    );
+    plugin.add_rpc_method(
+        "rpay",
+        "",
+        "Pay an invoice with barq through pay's interface: same parameters, result and error codes as pay",
+        RPay,
+    );
     plugin.register_notification("shutdown", OnShutdown);
+    // The hook must be declared in the manifest, before options are known:
+    // register it whenever lightningd supports the `pay` filter, and let
+    // `barq-override-pay` decide at runtime.
+    let version = std::env::var("LIGHTNINGD_VERSION").ok();
+    if pay_hook::supports_filters(version.as_deref()) {
+        // rpc_command is a chained hook where the first plugin that changes
+        // the request wins. Since v25.12 `cln-xpay` takes over `pay` the same
+        // way, so barq must come first.
+        plugin.register_hook_with_filters(
+            "rpc_command",
+            Some(vec!["cln-xpay".to_owned()]),
+            None,
+            Some(vec![serde_json::json!("pay")]),
+            PayHook,
+        );
+        plugin.state.pay_hook_registered = true;
+    }
     plugin.on_init(on_init);
     Ok(plugin)
 }
@@ -182,6 +314,45 @@ fn on_init(plugin: &mut Plugin<State>) -> Value {
     };
     let use_cln_gossip: bool = plugin.get_opt::<bool>(OPT_CLN_GOSSIP).unwrap_or(true);
     let interval: i64 = plugin.get_opt::<i64>(OPT_SYNC_INTERVAL).unwrap_or(3600);
+    if let Some(program) = plugin.get_opt::<String>(OPT_EXTERNAL_STRATEGY) {
+        let mut strategy = ExternalStrategy::new(&program);
+        strategy.workdir = Some(lightning_dir.clone());
+        strategy.rpc_file = config.rpc_file.clone();
+        strategy.timeout = Duration::from_secs(
+            plugin
+                .get_opt::<i64>(OPT_EXTERNAL_TIMEOUT)
+                .unwrap_or(30)
+                .clamp(1, 600) as u64,
+        );
+        log::info!("external strategy: {program}");
+        plugin.state.external_strategy = Some(strategy);
+    }
+    plugin.state.override_pay = plugin.get_opt::<bool>(OPT_OVERRIDE_PAY).unwrap_or(false);
+    if plugin.state.override_pay {
+        if plugin.state.pay_hook_registered {
+            log::info!("barq serves the `pay` command");
+        } else {
+            // A build from an untagged checkout reports a bare commit hash,
+            // which says nothing about filter support: say so, since that
+            // looks like a recent version to whoever built it.
+            let version = std::env::var("LIGHTNINGD_VERSION").unwrap_or_default();
+            log::warn!(
+                "barq-override-pay needs Core Lightning v{}.{} or later (rpc_command filters), \
+                 and this lightningd reports version {version:?}, which {}; `pay` is not served by barq",
+                pay_hook::FILTERS_SINCE.0,
+                pay_hook::FILTERS_SINCE.1,
+                if pay_hook::parse_version(&version).is_some() {
+                    "is older"
+                } else {
+                    "is not a release version (built without git tags?)"
+                }
+            );
+        }
+    }
+    plugin.state.max_attempts = plugin
+        .get_opt::<i64>(OPT_MAX_ATTEMPTS)
+        .unwrap_or(3)
+        .clamp(1, 100) as u32;
 
     let gossip_store = if use_cln_gossip {
         Some(lightning_dir.join("gossip_store"))
@@ -189,6 +360,12 @@ fn on_init(plugin: &mut Plugin<State>) -> Value {
         None
     };
     let data_dir = lightning_dir.join("barq");
+    match PaymentStore::open(data_dir.join("payments")) {
+        Ok(store) => plugin.state.store = Some(Arc::new(store)),
+        Err(err) => {
+            return serde_json::json!({ "disable": format!("cannot open the payment history: {err:#}") })
+        }
+    }
     let ctx = match NetworkContext::new(network, data_dir, gossip_store.clone(), rgs_url.clone()) {
         Ok(ctx) => ctx,
         Err(err) => {
@@ -203,6 +380,15 @@ fn on_init(plugin: &mut Plugin<State>) -> Value {
             .map(|p| p.display().to_string())
             .unwrap_or_else(|| "disabled".to_owned())
     );
+    if let Some(path) = plugin.get_opt::<String>(OPT_DEV_SIMULATED_GRAPH) {
+        let loaded = GraphSpec::from_file(&path).and_then(|spec| spec.apply(&ctx.graph));
+        match loaded {
+            Ok(count) => log::info!("loaded {count} simulated channels from {path}"),
+            Err(err) => {
+                return serde_json::json!({ "disable": format!("cannot load simulated graph {path}: {err:#}") })
+            }
+        }
+    }
     if interval > 0 {
         ctx.start_background_sync(
             plugin.state.runtime.handle(),
@@ -214,12 +400,22 @@ fn on_init(plugin: &mut Plugin<State>) -> Value {
     serde_json::json!({})
 }
 
-#[rpc_method(
-    rpc_name = "barqpay",
-    description = "Pay a BOLT11 or BOLT12 invoice routing with LDK"
-)]
-pub fn barq_pay(plugin: &mut Plugin<State>, request: Value) -> Result<Value, PluginError> {
-    methods::pay::barq_pay(plugin, request)
+#[derive(Clone)]
+struct BarqPay;
+
+impl RPCCommand<State> for BarqPay {
+    fn call_deferred(&self, plugin: &mut Plugin<State>, request: Value, responder: Responder) {
+        methods::pay::barq_pay(plugin, request, responder)
+    }
+}
+
+#[derive(Clone)]
+struct RPay;
+
+impl RPCCommand<State> for RPay {
+    fn call_deferred(&self, plugin: &mut Plugin<State>, request: Value, responder: Responder) {
+        methods::pay_hook::rpay(plugin, request, responder)
+    }
 }
 
 #[rpc_method(
@@ -257,4 +453,12 @@ pub(crate) fn exit_plugin(state: &State, reason: &str) -> ! {
         }
     }
     std::process::exit(0)
+}
+
+#[rpc_method(
+    rpc_name = "barqinspect",
+    description = "Inspect a past barq payment by id or payment_hash, or list recent ones"
+)]
+fn barq_inspect(plugin: &mut Plugin<State>, request: Value) -> Result<Value, PluginError> {
+    methods::inspect::barq_inspect(plugin, request)
 }

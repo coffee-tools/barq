@@ -13,7 +13,7 @@ use barq_common::secp256k1::PublicKey;
 use barq_common::strategy::{Payee, RouteInput, StrategyKind};
 
 use crate::methods::context;
-use crate::methods::pay::{describe_path, strategy_name, RouteHopJson};
+use crate::methods::pay::{describe_path, RouteHopJson};
 use crate::plugin::State;
 
 /// Request payload for Barq route info RPC method
@@ -30,21 +30,41 @@ pub struct BarqRouteInfoRequest {
 }
 
 impl BarqRouteInfoRequest {
-    pub fn strategy(&self) -> anyhow::Result<StrategyKind> {
-        if let Some(ref s) = self.strategy {
-            return StrategyKind::from_str(s);
-        }
-        Ok(StrategyKind::default())
+    pub fn strategy(&self) -> anyhow::Result<Option<StrategyKind>> {
+        self.strategy
+            .as_deref()
+            .map(StrategyKind::from_str)
+            .transpose()
     }
+}
+
+/// A ranked route.
+#[derive(Deserialize, Serialize)]
+pub struct CandidateJson {
+    pub strategy: String,
+    pub fee_msat: u64,
+    pub total_cltv: u32,
+    pub hops: usize,
+}
+
+/// A strategy without a route, and why.
+#[derive(Deserialize, Serialize)]
+pub struct RejectedJson {
+    pub strategy: String,
+    pub reason: String,
 }
 
 /// Response payload for Barq route info RPC method
 #[derive(Deserialize, Serialize)]
 pub struct BarqRouteInfoResponse {
+    /// The strategy of the best route.
     pub strategy: String,
     pub amount_msat: u64,
     pub fee_msat: u64,
     pub route: Vec<RouteHopJson>,
+    /// Every route, best first: `barqpay` tries them in this order.
+    pub candidates: Vec<CandidateJson>,
+    pub rejected: Vec<RejectedJson>,
 }
 
 /// Barq RPC method to get route information
@@ -73,13 +93,36 @@ async fn route_info(state: State, request: BarqRouteInfoRequest) -> Result<Value
         final_cltv_delta: request.cltv.unwrap_or(18),
         first_hops: node.first_hops,
         expiry_time: None,
+        strategy: kind,
+        excluded_channels: vec![],
     };
-    let output = context::route_with(state, kind, &input)?;
+    let ranking = context::rank(state, &input)?;
+    let Some(best) = ranking.best() else {
+        return Err(error!("No route found: {}", ranking.explain()));
+    };
     let response = BarqRouteInfoResponse {
-        strategy: strategy_name(kind).to_owned(),
+        strategy: best.strategy.clone(),
         amount_msat: request.amount_msat,
-        fee_msat: output.fee_msat(),
-        route: describe_path(&output.path),
+        fee_msat: best.fee_msat(),
+        route: describe_path(&best.output.path),
+        candidates: ranking
+            .candidates
+            .iter()
+            .map(|c| CandidateJson {
+                strategy: c.strategy.clone(),
+                fee_msat: c.fee_msat(),
+                total_cltv: c.total_cltv(),
+                hops: c.output.path.hops.len(),
+            })
+            .collect(),
+        rejected: ranking
+            .rejected
+            .iter()
+            .map(|r| RejectedJson {
+                strategy: r.strategy.clone(),
+                reason: r.reason.clone(),
+            })
+            .collect(),
     };
     Ok(json::to_value(response)?)
 }

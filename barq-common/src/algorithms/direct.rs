@@ -42,6 +42,7 @@ impl Strategy for Direct {
             .first_hops
             .iter()
             .filter(|hop| hop.peer_id == dest)
+            .filter(|hop| !input.excluded_channels.contains(&hop.scid))
             .collect();
         if channels.is_empty() {
             anyhow::bail!("No channel with `{dest}` found");
