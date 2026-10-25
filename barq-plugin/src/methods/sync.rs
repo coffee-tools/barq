@@ -2,13 +2,12 @@
 use serde_json::{json, Value};
 
 use clightningrpc_plugin::errors::PluginError;
-use clightningrpc_plugin::plugin::Plugin;
 
 use crate::plugin::State;
 
-pub fn barq_sync_gossip(plugin: &mut Plugin<State>, _request: Value) -> Result<Value, PluginError> {
-    let ctx = plugin.state.ctx()?;
-    let report = plugin.state.block_on(ctx.sync_all());
+pub async fn barq_sync_gossip(state: State, _request: Value) -> Result<Value, PluginError> {
+    let ctx = state.ctx()?;
+    let report = ctx.sync_all().await;
     let (channels, nodes) = ctx.size();
     let rgs = match report.rapid_gossip_sync {
         None => json!({ "enabled": false }),

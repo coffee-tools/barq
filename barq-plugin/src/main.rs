@@ -5,13 +5,13 @@ mod methods;
 mod plugin;
 
 /// Main entry point for Barq
-fn main() -> Result<()> {
+#[tokio::main]
+async fn main() -> Result<()> {
     logger::init();
     let plugin = plugin::build_plugin()?;
-    // Keep the runtime alive past `start`: dropping it would wait for any
-    // blocking gossip task still running.
-    let _runtime = plugin.state.runtime.clone();
-    // cln4rust returns from `start` when lightningd closes stdin.
-    plugin.start();
+    // cln4rust returns from `start_async` when lightningd closes stdin.
+    plugin.start_async().await;
+    // Exit without waiting for payments or blocking gossip tasks still
+    // running: lightningd is gone.
     std::process::exit(0)
 }

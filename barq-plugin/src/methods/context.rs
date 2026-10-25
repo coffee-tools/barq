@@ -69,11 +69,17 @@ pub fn strategies(state: &State) -> Result<Vec<NamedStrategy>, PluginError> {
 }
 
 /// Rank the routes every applicable strategy proposes for `input`.
-pub fn rank(state: &State, input: &RouteInput) -> Result<Ranking, PluginError> {
+///
+/// Route finding is CPU work and an external strategy program may run up
+/// to its timeout, so it runs on tokio's blocking pool.
+pub async fn rank(state: &State, input: &RouteInput) -> Result<Ranking, PluginError> {
     if input.strategy == Some(StrategyKind::External) && state.external_strategy.is_none() {
         return Err(error!(
             "No external strategy configured: set `barq-external-strategy`"
         ));
     }
-    Ok(selection::rank(&strategies(state)?, input))
+    let (state, input) = (state.clone(), input.clone());
+    tokio::task::spawn_blocking(move || Ok(selection::rank(&strategies(&state)?, &input)))
+        .await
+        .map_err(|err| error!("route finding failed: {err}"))?
 }

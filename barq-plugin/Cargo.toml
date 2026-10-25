@@ -13,14 +13,15 @@ anyhow = { workspace = true }
 hex = "0.4"
 
 # Core lightning-rpc dependencies
-# cln4rust master 15cdbec: async RPC client (feature `async`), the plugin EOF
-# fix, the incremental gossip_store reader, hook filters (`register_hook_with_filters`,
-# laanwj/cln4rust#148) and deferred responses (`RPCCommand::call_deferred`,
-# laanwj/cln4rust#150).
-clightningrpc = { git = "https://github.com/laanwj/cln4rust.git", rev = "15cdbec56c7e54f555cfa7cd293b04fb1d72b2c6", features = ["async"] }
-clightningrpc-common = { git = "https://github.com/laanwj/cln4rust.git", rev = "15cdbec56c7e54f555cfa7cd293b04fb1d72b2c6", features = ["async"] }
-clightningrpc-plugin = { git = "https://github.com/laanwj/cln4rust.git", rev = "15cdbec56c7e54f555cfa7cd293b04fb1d72b2c6" }
-clightningrpc-plugin-macros = { git = "https://github.com/laanwj/cln4rust.git", rev = "15cdbec56c7e54f555cfa7cd293b04fb1d72b2c6" }
+# cln4rust laanwj/cln4rust#139 (32ed6c8, on master 15cdbec): async RPC client
+# (feature `async`), the plugin EOF fix, the incremental gossip_store reader,
+# hook filters (`register_hook_with_filters`, laanwj/cln4rust#148), deferred
+# responses (`RPCCommand::call_deferred`, laanwj/cln4rust#150) and async
+# handlers on a tokio runtime (`Plugin::start_async`, feature `async`).
+clightningrpc = { git = "https://github.com/laanwj/cln4rust.git", rev = "32ed6c836ba13b9c23ca16cc80f4f1aaec672bf2", features = ["async"] }
+clightningrpc-common = { git = "https://github.com/laanwj/cln4rust.git", rev = "32ed6c836ba13b9c23ca16cc80f4f1aaec672bf2", features = ["async"] }
+clightningrpc-plugin = { git = "https://github.com/laanwj/cln4rust.git", rev = "32ed6c836ba13b9c23ca16cc80f4f1aaec672bf2", features = ["async"] }
+clightningrpc-plugin-macros = { git = "https://github.com/laanwj/cln4rust.git", rev = "32ed6c836ba13b9c23ca16cc80f4f1aaec672bf2" }
 tokio = { version = "1", features = ["rt-multi-thread", "macros", "time"] }
 
 # Barq dependencies
