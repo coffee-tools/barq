@@ -8,7 +8,8 @@
 #                              the Mutinynet RGS snapshots only
 #   signet-sim.sh rgs-soak H   H hours (default 6) of RGS-only syncs, routes
 #                              and payments every 10 minutes
-#   signet-sim.sh lampo        pay a lampo (LDK) node that alice has no
+#   signet-sim.sh lampo        pay a lampo (LDK) node that the payer (PAYER,
+#                              default alice) has no
 #                              channel with, through carol and the faucet
 #
 # alice and carol must hold Mutinynet coins (faucet.mutinynet.com). Each check
@@ -469,18 +470,20 @@ rgs_soak() { # HOURS
 # --- lampo: an LDK node (github.com/vincenzopalazzo/lampo.rs) that alice
 # has no channel with: carol and the faucet's node have channels to it.
 LAMPO_CLI=${LAMPO_CLI:-$ROOT/lampo/cli.sh}
+# The node whose barq pays lampo: alice, or bob started with BARQ_NODES.
+PAYER=${PAYER:-alice}
 lampo() { "$LAMPO_CLI" "$@"; }
 lampo_id() { lampo getinfo | jq_ 'd["node_id"]'; }
 lampo_invoice() { # MSAT [ARGS...]
   local msat=$1; shift
   lampo invoice --amount_msat "$msat" --description "barq $RANDOM" "$@" | jq_ 'd["bolt11"]'
 }
-lampo_ready() { # alice's barq routes to lampo without a channel of its own
-  cli alice barqsyncgossip >/dev/null 2>&1
-  cli alice -k barqrouteinfo dest_pubkey="$(lampo_id)" amount_msat=10000 | jq_ '"ok" if len(d["route"]) >= 2 else d' | grep -q ok
+lampo_ready() { # the payer's barq routes to lampo without a channel of its own
+  cli "$PAYER" barqsyncgossip >/dev/null 2>&1
+  cli "$PAYER" -k barqrouteinfo dest_pubkey="$(lampo_id)" amount_msat=10000 | jq_ '"ok" if len(d["route"]) >= 2 else d' | grep -q ok
 }
 not_direct() {
-  cli alice listpeerchannels "$(lampo_id)" | jq_ '"ok" if not d["channels"] else d' | grep -q ok || { echo "alice has a channel with lampo"; return 1; }
+  cli "$PAYER" listpeerchannels "$(lampo_id)" | jq_ '"ok" if not d["channels"] else d' | grep -q ok || { echo "$PAYER has a channel with lampo"; return 1; }
 }
 # paid_lampo RESULT: barq's result is a completed payment to lampo; prints the route.
 paid_lampo() {
@@ -490,46 +493,46 @@ paid_lampo() {
 
 lampo_bolt11() {
   not_direct || return 1
-  local r; r=$(cli alice -k barqpay invoice="$(lampo_invoice 21000)") || { echo "$r"; return 1; }
+  local r; r=$(cli "$PAYER" -k barqpay invoice="$(lampo_invoice 21000)") || { echo "$r"; return 1; }
   paid_lampo "$r"
 }
 lampo_rpay() {
-  local r; r=$(cli alice rpay "$(lampo_invoice 16000)") || { echo "$r"; return 1; }
+  local r; r=$(cli "$PAYER" rpay "$(lampo_invoice 16000)") || { echo "$r"; return 1; }
   paid_lampo "$r"
 }
 lampo_amountless() {
   local inv r
   inv=$(lampo invoice --description "barq any $RANDOM" | jq_ 'd["bolt11"]')
-  r=$(cli alice -k barqpay invoice="$inv" amount_msat=17000) || { echo "$r"; return 1; }
+  r=$(cli "$PAYER" -k barqpay invoice="$inv" amount_msat=17000) || { echo "$r"; return 1; }
   echo "$r" | jq_ '"ok" if d["amount_msat"]==17000 else d' | grep -q ok || { echo "$r"; return 1; }
   paid_lampo "$r"
 }
 lampo_bolt12() {
   local offer inv r
   offer=$(lampo offer --amount_msat 13000 --description "barq bolt12 $RANDOM" | jq_ 'd["bolt12"]')
-  inv=$(cli alice fetchinvoice "$offer" | jq_ 'd["invoice"]') || return 1
-  r=$(cli alice -k barqpay invoice="$inv") || { echo "$r"; return 1; }
+  inv=$(cli "$PAYER" fetchinvoice "$offer" | jq_ 'd["invoice"]') || return 1
+  r=$(cli "$PAYER" -k barqpay invoice="$inv") || { echo "$r"; return 1; }
   echo "$r" | jq_ '"ok" if d["invoice_type"]=="bolt12" else d' | grep -q ok || { echo "$r"; return 1; }
   paid_lampo "$r"
 }
 lampo_bolt12_any() {
   local offer inv r
   offer=$(lampo offer --description "barq bolt12 any $RANDOM" | jq_ 'd["bolt12"]')
-  inv=$(cli alice fetchinvoice "$offer" 9000msat | jq_ 'd["invoice"]') || return 1
-  r=$(cli alice rpay "$inv") || { echo "$r"; return 1; }
+  inv=$(cli "$PAYER" fetchinvoice "$offer" 9000msat | jq_ 'd["invoice"]') || return 1
+  r=$(cli "$PAYER" rpay "$inv") || { echo "$r"; return 1; }
   paid_lampo "$r"
 }
 lampo_expired() {
   local inv; inv=$(lampo_invoice 5000 --expiring_in 1)
   sleep 3
-  expect_error 207 alice rpay "$inv"
+  expect_error 207 "$PAYER" rpay "$inv"
 }
 lampo_concurrent() {
   local a b out1 out2 p1 p2 f
   a=$(lampo_invoice 6000); b=$(lampo_invoice 7000)
   out1=$(mktemp); out2=$(mktemp)
-  cli alice rpay "$a" > "$out1" 2>&1 & p1=$!
-  cli alice rpay "$b" > "$out2" 2>&1 & p2=$!
+  cli "$PAYER" rpay "$a" > "$out1" 2>&1 & p1=$!
+  cli "$PAYER" rpay "$b" > "$out2" 2>&1 & p2=$!
   wait $p1 $p2
   for f in "$out1" "$out2"; do
     jq_ 'd["status"]' < "$f" | grep -q complete || { echo "payment failed: $(head -c 300 "$f")"; return 1; }
@@ -537,16 +540,16 @@ lampo_concurrent() {
   rm -f "$out1" "$out2"
 }
 lampo_via_faucet() {
-  # Leave carol out: the payment goes alice -> faucet -> lampo.
+  # Leave carol out: the payment goes through the faucet to lampo.
   lampo channels | jq_ '"ok" if any(c["peer_id"]=="'"$FAUCET_NODE"'" and c["ready"] for c in d["channels"]) else ""' | grep -q ok || { echo "no faucet channel to lampo"; return 1; }
-  local r; r=$(cli alice -k rpay bolt11="$(lampo_invoice 11000)" exclude='["'"$(id carol)"'"]') || { echo "$r"; return 1; }
+  local r; r=$(cli "$PAYER" -k rpay bolt11="$(lampo_invoice 11000)" exclude='["'"$(id carol)"'"]') || { echo "$r"; return 1; }
   paid_lampo "$r" || return 1
   # barq's history has the route that completed: it starts at the faucet.
-  cli alice -k barqinspect payment_hash="$(echo "$r" | jq_ 'd["payment_hash"]')" | jq_ '"ok" if d["payments"][-1]["attempts"][-1]["route"][0]["id"]=="'"$FAUCET_NODE"'" else d["payments"][-1]["attempts"]' | grep -q ok
+  cli "$PAYER" -k barqinspect payment_hash="$(echo "$r" | jq_ 'd["payment_hash"]')" | jq_ '"ok" if d["payments"][-1]["attempts"][-1]["route"][0]["id"]=="'"$FAUCET_NODE"'" else d["payments"][-1]["attempts"]' | grep -q ok
 }
 
 setup_lampo() {
-  say "== setup: lampo $(lampo_id), reached through carol and the faucet"
+  say "== setup: $PAYER pays lampo $(lampo_id), reached through carol and the faucet"
   wait_for 10800 "barq to route to lampo" lampo_ready || exit 1
   say "barq routes to lampo"
 }

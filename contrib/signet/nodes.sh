@@ -35,7 +35,8 @@ log-level=debug
 # The tests do not use gRPC; several nodes would fight over its port.
 disable-plugin=cln-grpc
 EOF
-  if [ "$n" = alice ]; then
+  # barq runs on alice, and on the other nodes listed in BARQ_NODES.
+  if [[ " ${BARQ_NODES:-alice} " == *" $n "* ]]; then
     cat >> "$d/config" <<EOF
 plugin=$BARQ
 barq-rgs-url=$RGS
