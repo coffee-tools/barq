@@ -78,3 +78,19 @@ routes over, beyond alice's own, comes from the snapshots:
 ```
 
 Both put alice back on its usual configuration when they end.
+
+## Paying an LDK node
+
+The `lampo` checks pay a [lampo](https://github.com/vincenzopalazzo/lampo.rs)
+node, an LDK implementation, that alice has no channel with: carol opens a
+channel to it, and so does the faucet's node (`mutinynet-cli channel
+<lampo id> <sats> --push-amount 0`, once lampo is connected to it). Run
+lampo with `network=signet` against the same bitcoind, and point
+`LAMPO_CLI` at a script that runs `lampo-cli --url <its API>`. The checks
+pay BOLT11 invoices (with an amount, without one, with `rpay`), BOLT12
+offers, an expired invoice (207), two invoices at once, and one through the
+faucet with carol excluded.
+
+```bash
+./signet-sim.sh lampo
+```

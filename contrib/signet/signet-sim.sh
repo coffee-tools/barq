@@ -8,19 +8,22 @@
 #                              the Mutinynet RGS snapshots only
 #   signet-sim.sh rgs-soak H   H hours (default 6) of RGS-only syncs, routes
 #                              and payments every 10 minutes
+#   signet-sim.sh lampo        pay a lampo (LDK) node that alice has no
+#                              channel with, through carol and the faucet
 #
 # alice and carol must hold Mutinynet coins (faucet.mutinynet.com). Each check
 # prints PASS or FAIL; the summary and exit status say whether barq paid,
 # failed and recorded payments as expected on the real signet.
 #
-# Env: CHANNEL_SAT (50000), MIN_FUNDS_SAT (60000), ROOT (~/barq-signet)
+# Env: CHANNEL_SAT (50000), MIN_FUNDS_SAT (60000), ROOT (~/barq-signet),
+#      LOG ($ROOT/signet-sim.log), LAMPO_CLI ($ROOT/lampo/cli.sh)
 set -uo pipefail
 
 ROOT=${ROOT:-$HOME/barq-signet}
 NODES=$ROOT/nodes.sh
 CHANNEL_SAT=${CHANNEL_SAT:-50000}
 MIN_FUNDS_SAT=${MIN_FUNDS_SAT:-60000}
-LOG=$ROOT/signet-sim.log
+LOG=${LOG:-$ROOT/signet-sim.log}
 PASS=0; FAIL=0; FAILED=()
 
 say() { echo "[$(date +%H:%M:%S)] $*" | tee -a "$LOG"; }
@@ -462,6 +465,105 @@ rgs_soak() { # HOURS
   [ "$FAIL" -eq 0 ]
 }
 
+
+# --- lampo: an LDK node (github.com/vincenzopalazzo/lampo.rs) that alice
+# has no channel with: carol and the faucet's node have channels to it.
+LAMPO_CLI=${LAMPO_CLI:-$ROOT/lampo/cli.sh}
+lampo() { "$LAMPO_CLI" "$@"; }
+lampo_id() { lampo getinfo | jq_ 'd["node_id"]'; }
+lampo_invoice() { # MSAT [ARGS...]
+  local msat=$1; shift
+  lampo invoice --amount_msat "$msat" --description "barq $RANDOM" "$@" | jq_ 'd["bolt11"]'
+}
+lampo_ready() { # alice's barq routes to lampo without a channel of its own
+  cli alice barqsyncgossip >/dev/null 2>&1
+  cli alice -k barqrouteinfo dest_pubkey="$(lampo_id)" amount_msat=10000 | jq_ '"ok" if len(d["route"]) >= 2 else d' | grep -q ok
+}
+not_direct() {
+  cli alice listpeerchannels "$(lampo_id)" | jq_ '"ok" if not d["channels"] else d' | grep -q ok || { echo "alice has a channel with lampo"; return 1; }
+}
+# paid_lampo RESULT: barq's result is a completed payment to lampo; prints the route.
+paid_lampo() {
+  echo "$1" | jq_ '"ok" if d["status"]=="complete" and d.get("destination", "'"$(lampo_id)"'")=="'"$(lampo_id)"'" else d' | grep -q ok || { echo "$1"; return 1; }
+  echo "$1" | jq_ '"route " + " -> ".join(h["id"][:10] for h in d.get("route", []))'
+}
+
+lampo_bolt11() {
+  not_direct || return 1
+  local r; r=$(cli alice -k barqpay invoice="$(lampo_invoice 21000)") || { echo "$r"; return 1; }
+  paid_lampo "$r"
+}
+lampo_rpay() {
+  local r; r=$(cli alice rpay "$(lampo_invoice 16000)") || { echo "$r"; return 1; }
+  paid_lampo "$r"
+}
+lampo_amountless() {
+  local inv r
+  inv=$(lampo invoice --description "barq any $RANDOM" | jq_ 'd["bolt11"]')
+  r=$(cli alice -k barqpay invoice="$inv" amount_msat=17000) || { echo "$r"; return 1; }
+  echo "$r" | jq_ '"ok" if d["amount_msat"]==17000 else d' | grep -q ok || { echo "$r"; return 1; }
+  paid_lampo "$r"
+}
+lampo_bolt12() {
+  local offer inv r
+  offer=$(lampo offer --amount_msat 13000 --description "barq bolt12 $RANDOM" | jq_ 'd["bolt12"]')
+  inv=$(cli alice fetchinvoice "$offer" | jq_ 'd["invoice"]') || return 1
+  r=$(cli alice -k barqpay invoice="$inv") || { echo "$r"; return 1; }
+  echo "$r" | jq_ '"ok" if d["invoice_type"]=="bolt12" else d' | grep -q ok || { echo "$r"; return 1; }
+  paid_lampo "$r"
+}
+lampo_bolt12_any() {
+  local offer inv r
+  offer=$(lampo offer --description "barq bolt12 any $RANDOM" | jq_ 'd["bolt12"]')
+  inv=$(cli alice fetchinvoice "$offer" 9000msat | jq_ 'd["invoice"]') || return 1
+  r=$(cli alice rpay "$inv") || { echo "$r"; return 1; }
+  paid_lampo "$r"
+}
+lampo_expired() {
+  local inv; inv=$(lampo_invoice 5000 --expiring_in 1)
+  sleep 3
+  expect_error 207 alice rpay "$inv"
+}
+lampo_concurrent() {
+  local a b out1 out2 p1 p2 f
+  a=$(lampo_invoice 6000); b=$(lampo_invoice 7000)
+  out1=$(mktemp); out2=$(mktemp)
+  cli alice rpay "$a" > "$out1" 2>&1 & p1=$!
+  cli alice rpay "$b" > "$out2" 2>&1 & p2=$!
+  wait $p1 $p2
+  for f in "$out1" "$out2"; do
+    jq_ 'd["status"]' < "$f" | grep -q complete || { echo "payment failed: $(head -c 300 "$f")"; return 1; }
+  done
+  rm -f "$out1" "$out2"
+}
+lampo_via_faucet() {
+  # Leave carol out: the payment goes alice -> faucet -> lampo.
+  lampo channels | jq_ '"ok" if any(c["peer_id"]=="'"$FAUCET_NODE"'" and c["ready"] for c in d["channels"]) else ""' | grep -q ok || { echo "no faucet channel to lampo"; return 1; }
+  local r; r=$(cli alice -k rpay bolt11="$(lampo_invoice 11000)" exclude='["'"$(id carol)"'"]') || { echo "$r"; return 1; }
+  paid_lampo "$r" || return 1
+  # barq's history has the route that completed: it starts at the faucet.
+  cli alice -k barqinspect payment_hash="$(echo "$r" | jq_ 'd["payment_hash"]')" | jq_ '"ok" if d["payments"][-1]["attempts"][-1]["route"][0]["id"]=="'"$FAUCET_NODE"'" else d["payments"][-1]["attempts"]' | grep -q ok
+}
+
+setup_lampo() {
+  say "== setup: lampo $(lampo_id), reached through carol and the faucet"
+  wait_for 10800 "barq to route to lampo" lampo_ready || exit 1
+  say "barq routes to lampo"
+}
+checks_lampo() {
+  say "== lampo checks"
+  check "BOLT11 to lampo over other nodes" lampo_bolt11
+  check "BOLT11 to lampo with rpay" lampo_rpay
+  check "amountless BOLT11 to lampo" lampo_amountless
+  check "BOLT12 offer of lampo" lampo_bolt12
+  check "BOLT12 any-amount offer of lampo" lampo_bolt12_any
+  check "expired lampo invoice fails with 207" lampo_expired
+  check "two payments to lampo at once" lampo_concurrent
+  check "lampo through the faucet with carol excluded" lampo_via_faucet
+  say "== $PASS passed, $FAIL failed${FAILED:+: ${FAILED[*]}}"
+  [ "$FAIL" -eq 0 ]
+}
+
 case "${1:-all}" in
   all) setup && checks ;;
   checks) checks ;;
@@ -469,5 +571,6 @@ case "${1:-all}" in
   public) setup_public && checks_public ;;
   rgs) setup_rgs && checks_rgs ;;
   rgs-soak) rgs_soak "${2:-6}" ;;
-  *) echo "usage: $0 [all|setup|checks|public|rgs|rgs-soak [HOURS]]"; exit 1 ;;
+  lampo) setup_lampo && checks_lampo ;;
+  *) echo "usage: $0 [all|setup|checks|public|rgs|rgs-soak [HOURS]|lampo]"; exit 1 ;;
 esac
