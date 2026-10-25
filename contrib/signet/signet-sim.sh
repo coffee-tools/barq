@@ -472,6 +472,7 @@ rgs_soak() { # HOURS
 LAMPO_CLI=${LAMPO_CLI:-$ROOT/lampo/cli.sh}
 # The node whose barq pays lampo: alice, or bob started with BARQ_NODES.
 PAYER=${PAYER:-alice}
+LAMPO_ADDR=${LAMPO_ADDR:-127.0.0.1:19849}
 lampo() { "$LAMPO_CLI" "$@"; }
 lampo_id() { lampo getinfo | jq_ 'd["node_id"]'; }
 lampo_invoice() { # MSAT [ARGS...]
@@ -485,10 +486,12 @@ lampo_ready() { # the payer's barq routes to lampo without a channel of its own
 not_direct() {
   cli "$PAYER" listpeerchannels "$(lampo_id)" | jq_ '"ok" if not d["channels"] else d' | grep -q ok || { echo "$PAYER has a channel with lampo"; return 1; }
 }
-# paid_lampo RESULT: barq's result is a completed payment to lampo; prints the route.
+# paid_lampo RESULT: barq's result is a completed payment to lampo; prints
+# the route. A BOLT12 payment ends in lampo's blinded path, whose last
+# blinded node id is the destination barq reports.
 paid_lampo() {
-  echo "$1" | jq_ '"ok" if d["status"]=="complete" and d.get("destination", "'"$(lampo_id)"'")=="'"$(lampo_id)"'" else d' | grep -q ok || { echo "$1"; return 1; }
-  echo "$1" | jq_ '"route " + " -> ".join(h["id"][:10] for h in d.get("route", []))'
+  echo "$1" | jq_ '"ok" if d["status"]=="complete" and (d.get("invoice_type")=="bolt12" or d.get("destination", "'"$(lampo_id)"'")=="'"$(lampo_id)"'") else d' | grep -q ok || { echo "$1"; return 1; }
+  echo "$1" | jq_ '"route " + " -> ".join(h["id"][:10] for h in d.get("route", [])) + (" + %d blinded hops" % d["blinded_hops"] if d.get("blinded_hops") else "")'
 }
 
 lampo_bolt11() {
@@ -507,8 +510,13 @@ lampo_amountless() {
   echo "$r" | jq_ '"ok" if d["amount_msat"]==17000 else d' | grep -q ok || { echo "$r"; return 1; }
   paid_lampo "$r"
 }
+# lampo sends no node announcement without a public address, so Core
+# Lightning cannot route onion messages to it: fetch invoices over a peer
+# connection (no channel), and pay over the channels as usual.
+lampo_peer() { cli "$PAYER" connect "$(lampo_id)@$LAMPO_ADDR" >/dev/null; }
 lampo_bolt12() {
   local offer inv r
+  lampo_peer || return 1
   offer=$(lampo offer --amount_msat 13000 --description "barq bolt12 $RANDOM" | jq_ 'd["bolt12"]')
   inv=$(cli "$PAYER" fetchinvoice "$offer" | jq_ 'd["invoice"]') || return 1
   r=$(cli "$PAYER" -k barqpay invoice="$inv") || { echo "$r"; return 1; }
@@ -517,9 +525,10 @@ lampo_bolt12() {
 }
 lampo_bolt12_any() {
   local offer inv r
+  lampo_peer || return 1
   offer=$(lampo offer --description "barq bolt12 any $RANDOM" | jq_ 'd["bolt12"]')
   inv=$(cli "$PAYER" fetchinvoice "$offer" 9000msat | jq_ 'd["invoice"]') || return 1
-  r=$(cli "$PAYER" rpay "$inv") || { echo "$r"; return 1; }
+  r=$(cli "$PAYER" -k barqpay invoice="$inv") || { echo "$r"; return 1; }
   paid_lampo "$r"
 }
 lampo_expired() {

@@ -89,7 +89,9 @@ lampo with `network=signet` against the same bitcoind, and point
 `LAMPO_CLI` at a script that runs `lampo-cli --url <its API>`. The checks
 pay BOLT11 invoices (with an amount, without one, with `rpay`), BOLT12
 offers, an expired invoice (207), two invoices at once, and one through the
-faucet with carol excluded.
+faucet with carol excluded. lampo sends no node announcement without a public
+address, so the payer fetches BOLT12 invoices over a plain peer connection
+to lampo (`LAMPO_ADDR`, no channel).
 
 ```bash
 ./signet-sim.sh lampo
