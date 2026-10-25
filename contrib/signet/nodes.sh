@@ -39,7 +39,8 @@ EOF
     cat >> "$d/config" <<EOF
 plugin=$BARQ
 barq-rgs-url=$RGS
-barq-sync-interval=600
+barq-sync-interval=${BARQ_SYNC_INTERVAL:-600}
+barq-cln-gossip=${BARQ_CLN_GOSSIP:-true}
 EOF
     if [ "${BARQ_OVERRIDE_PAY:-0}" = 1 ]; then
       # xpay also takes over `pay`: switch it off so barq serves it.

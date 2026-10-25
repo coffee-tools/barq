@@ -206,6 +206,16 @@ impl NetworkContext {
         let timestamp = rapid_sync
             .update_network_graph(snapshot)
             .map_err(|e| anyhow::anyhow!("Failed to apply rapid gossip sync snapshot: {e:?}"))?;
+        // LDK 0.0.123 returns before storing the timestamp of a snapshot
+        // without channel updates: store it, or every following sync asks
+        // the server for the same snapshot again.
+        if self
+            .graph
+            .get_last_rapid_gossip_sync_timestamp()
+            .is_none_or(|last| last < timestamp)
+        {
+            self.graph.set_last_rapid_gossip_sync_timestamp(timestamp);
+        }
         log::info!(
             "rapid gossip sync: applied {} bytes, new timestamp {timestamp}",
             snapshot.len()
@@ -401,6 +411,50 @@ impl NetworkContext {
 #[cfg(test)]
 mod tests {
     use super::*;
+
+    /// A rapid gossip sync snapshot with no nodes, announcements or updates.
+    fn empty_snapshot(ctx: &NetworkContext, timestamp: u32) -> Vec<u8> {
+        let mut snapshot = vec![76, 68, 75, 1];
+        snapshot.extend_from_slice(ctx.graph.get_chain_hash().as_bytes());
+        snapshot.extend_from_slice(&timestamp.to_be_bytes());
+        // Node ids, channel announcements and channel updates.
+        snapshot.extend_from_slice(&[0; 12]);
+        snapshot
+    }
+
+    #[test]
+    fn a_snapshot_without_updates_advances_the_sync_timestamp() {
+        let dir = std::env::temp_dir().join(format!("barq-rgs-empty-{}", std::process::id()));
+        let ctx = NetworkContext::new(
+            Network::Bitcoin,
+            dir.clone(),
+            None,
+            Some("http://127.0.0.1:9/snapshot".to_owned()),
+        )
+        .unwrap();
+        let now = std::time::SystemTime::now()
+            .duration_since(std::time::UNIX_EPOCH)
+            .unwrap()
+            .as_secs() as u32;
+        let first = now - 3600;
+        assert_eq!(
+            ctx.apply_rapid_gossip_snapshot(&empty_snapshot(&ctx, first))
+                .unwrap(),
+            first
+        );
+        assert!(ctx
+            .rgs_snapshot_url()
+            .unwrap()
+            .ends_with(&format!("/{first}")));
+        // An older snapshot never moves the timestamp back.
+        ctx.apply_rapid_gossip_snapshot(&empty_snapshot(&ctx, first - 3600))
+            .unwrap();
+        assert_eq!(
+            ctx.graph.get_last_rapid_gossip_sync_timestamp(),
+            Some(first)
+        );
+        let _ = std::fs::remove_dir_all(dir);
+    }
 
     /// Hits the public LDK server: run with `cargo test -- --ignored`.
     #[tokio::test(flavor = "multi_thread")]

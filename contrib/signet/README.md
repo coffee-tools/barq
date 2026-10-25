@@ -52,3 +52,27 @@ Then:
 
 Each check prints PASS or FAIL in `signet-sim.log`; the exit status is
 non-zero when one fails.
+
+## Rapid gossip sync
+
+alice normally reads both Core Lightning's gossip_store and the Mutinynet
+rapid gossip sync server (`https://rgs.mutinynet.com/snapshot`). The `rgs`
+checks restart alice with `barq-cln-gossip=false`, so every channel barq
+routes over, beyond alice's own, comes from the snapshots:
+
+- a full sync from an empty graph, compared with Core Lightning's gossip
+- the next sync continuing from the last applied timestamp, and a restart
+  continuing from the persisted one
+- routes to a sample of public nodes compared with Core Lightning's
+  `getroute` (`RGS_SAMPLE`, default 40)
+- BOLT11 and BOLT12 payments, a 205 failure, concurrent payments and the
+  faucet's node, all routed over RGS data
+- an unreachable server (the gossip_store takes over), another chain's
+  server and a server answering something else
+
+```bash
+./signet-sim.sh rgs           # once the channels of `all` and `public` exist
+./signet-sim.sh rgs-soak 12   # 12 hours of syncs, routes and payments
+```
+
+Both put alice back on its usual configuration when they end.
