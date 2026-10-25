@@ -295,16 +295,27 @@ rgs_synced() { # alice's barq applied a snapshot since it started
   rgs_log | grep -q "rapid gossip sync: applied"
 }
 
+# The channel announcements in the server's full snapshot.
+rgs_snapshot_channels() {
+  curl -s --max-time 60 "${RGS:-https://rgs.mutinynet.com/snapshot}/0" | python3 -c '
+import struct, sys
+b = sys.stdin.buffer.read()
+nodes, = struct.unpack(">I", b[40:44])
+o = 44 + 33 * nodes
+print(struct.unpack(">I", b[o:o + 4])[0])
+'
+}
 rgs_full_sync() {
-  # From an empty graph: one snapshot holds most of the public graph that
-  # Core Lightning's own gossip knows.
-  local r ours cln
+  # From an empty graph: barq holds every channel of the server's full
+  # snapshot (the server may know fewer than Core Lightning's gossip).
+  local r ours cln snap
   r=$(cli alice barqsyncgossip) || { echo "$r"; return 1; }
   cln=$(cli alice listchannels | jq_ 'len({c["short_channel_id"] for c in d["channels"]})')
+  snap=$(rgs_snapshot_channels) || return 1
   ours=$(echo "$r" | jq_ 'd["channels"]')
-  echo "barq knows $ours channels from RGS, Core Lightning's gossip $cln"
   echo "$r" | jq_ '"ok" if not d["gossip_store"]["enabled"] and d["rapid_gossip_sync"].get("last_sync_timestamp", 0) > '"$(( $(date +%s) - 14 * 86400 ))"' else d' | grep -q ok || return 1
-  [ $((ours * 10)) -ge $((cln * 7)) ] || { echo "too few channels: $ours of $cln"; return 1; }
+  [ "$ours" -ge "$snap" ] || { echo "barq holds $ours channels, the snapshot announces $snap"; return 1; }
+  echo "barq holds $ours channels, the server's snapshot announces $snap, Core Lightning's gossip knows $cln"
 }
 rgs_next_fetch_continues() {
   # The next sync asks for the snapshot since the last one applied.

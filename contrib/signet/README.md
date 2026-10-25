@@ -60,7 +60,9 @@ rapid gossip sync server (`https://rgs.mutinynet.com/snapshot`). The `rgs`
 checks restart alice with `barq-cln-gossip=false`, so every channel barq
 routes over, beyond alice's own, comes from the snapshots:
 
-- a full sync from an empty graph, compared with Core Lightning's gossip
+- a full sync from an empty graph holding every channel of the server's
+  full snapshot (Mutinynet's server knows fewer channels than Core
+  Lightning's gossip)
 - the next sync continuing from the last applied timestamp, and a restart
   continuing from the persisted one
 - routes to a sample of public nodes compared with Core Lightning's
