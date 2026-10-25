@@ -18,10 +18,7 @@ use std::time::{SystemTime, UNIX_EPOCH};
 
 use serde_json::{json, Value};
 
-use clightningrpc_plugin::commands::RPCCommand;
 use clightningrpc_plugin::errors::PluginError;
-use clightningrpc_plugin::plugin::Plugin;
-use clightningrpc_plugin::responder::Responder;
 
 use crate::methods::cln;
 use crate::methods::pay::{self, BarqPayRequest};
@@ -260,28 +257,18 @@ pub fn pay_error(barq: &Value) -> Value {
     error
 }
 
-/// The `rpc_command` hook handler.
-#[derive(Clone)]
-pub struct PayHook;
-
-impl RPCCommand<State> for PayHook {
-    fn call_deferred(&self, plugin: &mut Plugin<State>, request: Value, responder: Responder) {
-        let command = &request["rpc_command"];
-        if command["method"] != "pay" || !plugin.state.override_pay {
-            return responder.respond(Ok(json!({ "result": "continue" })));
-        }
-        // The `pay` command waits for this hook: answer when the payment
-        // completes, and serve other requests in the meantime.
-        let params = command["params"].clone();
-        plugin
-            .state
-            .respond_later(responder, "pay", move |state| async move {
-                Ok(pay_hook(&state, params).await)
-            });
+/// The `rpc_command` hook handler. The `pay` command waits for it: it
+/// answers when the payment completes, and other requests are served in
+/// the meantime.
+pub async fn pay_hook(state: State, request: Value) -> Result<Value, PluginError> {
+    let command = &request["rpc_command"];
+    if command["method"] != "pay" || !state.override_pay {
+        return Ok(json!({ "result": "continue" }));
     }
+    Ok(serve_pay_hook(&state, command["params"].clone()).await)
 }
 
-async fn pay_hook(state: &State, params: Value) -> Value {
+async fn serve_pay_hook(state: &State, params: Value) -> Value {
     // If xpay also takes over `pay`, two plugins modify the same command
     // and Core Lightning (at least up to v26.06.9) frees the request
     // twice and aborts. Never risk the node: leave `pay` to xpay.
@@ -318,19 +305,15 @@ pub async fn serve_pay(state: &State, params: &Value) -> Result<Value, Value> {
 
 /// The `rpay` command: `pay`'s interface, always served by barq. It answers
 /// when the payment completes.
-pub fn rpay(plugin: &mut Plugin<State>, params: Value, responder: Responder) {
+pub async fn rpay(state: State, params: Value) -> Result<Value, PluginError> {
     log::info!("rpay called with request: {params}");
-    plugin
-        .state
-        .respond_later(responder, "rpay", move |state| async move {
-            serve_pay(&state, &params).await.map_err(|error| {
-                PluginError::new(
-                    error["code"].as_i64().unwrap_or(-1) as i32,
-                    error["message"].as_str().unwrap_or("barq payment failed"),
-                    error.get("data").cloned(),
-                )
-            })
-        });
+    serve_pay(&state, &params).await.map_err(|error| {
+        PluginError::new(
+            error["code"].as_i64().unwrap_or(-1) as i32,
+            error["message"].as_str().unwrap_or("barq payment failed"),
+            error.get("data").cloned(),
+        )
+    })
 }
 
 #[cfg(test)]

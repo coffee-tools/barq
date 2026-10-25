@@ -10,8 +10,6 @@ use serde_json as json;
 
 use clightningrpc_plugin::error;
 use clightningrpc_plugin::errors::PluginError;
-use clightningrpc_plugin::plugin::Plugin;
-use clightningrpc_plugin::responder::Responder;
 
 use barq_common::algorithms::direct::Direct;
 use barq_common::algorithms::probabilistic::LDKRoutingStrategy;
@@ -186,17 +184,10 @@ pub fn describe_path(path: &Path) -> Vec<RouteHopJson> {
 
 /// Barq RPC method to execute a payment: it answers when the payment
 /// completes, and other requests are served in the meantime.
-pub fn barq_pay(plugin: &mut Plugin<State>, request: json::Value, responder: Responder) {
+pub async fn barq_pay(state: State, request: json::Value) -> Result<json::Value, PluginError> {
     log::info!("barqpay called with request: {}", request);
-    let request: BarqPayRequest = match json::from_value(request) {
-        Ok(request) => request,
-        Err(err) => return responder.respond(Err(error!("{err}"))),
-    };
-    plugin
-        .state
-        .respond_later(responder, "barqpay", move |state| async move {
-            pay(state, request).await
-        });
+    let request: BarqPayRequest = json::from_value(request).map_err(|err| error!("{err}"))?;
+    pay(state, request).await
 }
 
 /// Marks a payment hash as being paid by barq until dropped.
@@ -573,7 +564,7 @@ impl Payment<'_> {
                 strategy: forced,
                 excluded_channels: excluded.clone(),
             };
-            let mut ranking = context::rank(self.state, &input)?;
+            let mut ranking = context::rank(self.state, &input).await?;
             for rejected in &ranking.rejected {
                 record.event(
                     log::Level::Debug,

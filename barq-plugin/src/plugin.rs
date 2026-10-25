@@ -1,7 +1,6 @@
 //! Barq Plugin implementation
 
 use std::collections::HashSet;
-use std::future::Future;
 use std::path::PathBuf;
 use std::str::FromStr;
 use std::sync::{Arc, Mutex};
@@ -11,13 +10,12 @@ use clightningrpc_common::errors::RpcError;
 use serde::de::DeserializeOwned;
 use serde::Serialize;
 use serde_json::Value;
-use tokio::runtime::Runtime;
 
 use clightningrpc::LightningRPC;
+use clightningrpc_plugin::commands::asynchronous::AsyncCommand;
 use clightningrpc_plugin::commands::RPCCommand;
 use clightningrpc_plugin::errors::PluginError;
 use clightningrpc_plugin::plugin::Plugin;
-use clightningrpc_plugin::responder::Responder;
 use clightningrpc_plugin_macros::{plugin, rpc_method};
 
 use barq_common::algorithms::external::ExternalStrategy;
@@ -27,7 +25,7 @@ use barq_common::simulation::GraphSpec;
 use barq_common::Network;
 
 use crate::methods;
-use crate::methods::pay_hook::{self, PayHook};
+use crate::methods::pay_hook;
 
 /// Plugin options.
 pub const OPT_RGS_URL: &str = "barq-rgs-url";
@@ -52,8 +50,6 @@ pub(crate) struct State {
     pub(crate) network: Option<Network>,
     /// The LDK network graph, scorer and gossip sources.
     pub(crate) ctx: Option<Arc<NetworkContext>>,
-    /// Runs the async RPC calls and the background gossip sync.
-    pub(crate) runtime: Arc<Runtime>,
     /// Default number of routes `barqpay` tries.
     pub(crate) max_attempts: u32,
     /// The payment history.
@@ -75,51 +71,12 @@ impl State {
             cln_rpc_path: None,
             network: None,
             ctx: None,
-            runtime: Arc::new(
-                tokio::runtime::Builder::new_multi_thread()
-                    .worker_threads(2)
-                    .thread_name("barq-rt")
-                    .enable_all()
-                    .build()
-                    .expect("building the tokio runtime"),
-            ),
             max_attempts: 3,
             store: None,
             override_pay: false,
             pay_hook_registered: false,
             external_strategy: None,
             in_flight: Arc::new(Mutex::new(HashSet::new())),
-        }
-    }
-
-    /// Drive `future` to completion from a synchronous cln4rust handler.
-    pub fn block_on<F: std::future::Future>(&self, future: F) -> F::Output {
-        self.runtime.block_on(future)
-    }
-
-    /// Serve a request on its own thread and answer `responder` when the
-    /// future built by `serve` completes, so the plugin goes on serving
-    /// other requests in the meantime.
-    ///
-    /// A thread rather than a runtime task: a payment also runs synchronous
-    /// work (route finding, an external strategy program for up to its
-    /// timeout) that would hold one of the runtime's few workers.
-    pub fn respond_later<F, Fut>(&self, responder: Responder, name: &str, serve: F)
-    where
-        F: FnOnce(State) -> Fut + Send + 'static,
-        Fut: Future<Output = Result<Value, PluginError>>,
-    {
-        let state = self.clone();
-        let spawned = std::thread::Builder::new()
-            .name(format!("barq-{name}"))
-            .spawn(move || {
-                let future = serve(state.clone());
-                responder.respond(state.block_on(future));
-            });
-        // The closure, and the responder with it, is dropped on failure:
-        // the request is answered with an error.
-        if let Err(err) = spawned {
-            log::warn!("cannot start a thread for `{name}`: {err}");
         }
     }
 
@@ -173,8 +130,6 @@ pub fn build_plugin() -> anyhow::Result<Plugin<State>> {
         dynamic: true,
         notification: [],
         methods: [
-            barq_route_info,
-            barq_sync_gossip,
             barq_inspect,
         ],
         hooks: [],
@@ -240,19 +195,31 @@ pub fn build_plugin() -> anyhow::Result<Plugin<State>> {
              the routing graph at startup, for testing strategies on large topologies.",
             false,
         );
-    // Payments take seconds to minutes: they answer when they complete
-    // and do not hold up other requests.
-    plugin.add_rpc_method(
+    // Async methods run as tasks: a payment takes seconds to minutes and
+    // does not hold up other requests.
+    plugin.add_async_rpc_method(
         "barqpay",
         "",
         "Pay a BOLT11 or BOLT12 invoice routing with LDK",
-        BarqPay,
+        methods::pay::barq_pay,
     );
-    plugin.add_rpc_method(
+    plugin.add_async_rpc_method(
         "rpay",
         "",
         "Pay an invoice with barq through pay's interface: same parameters, result and error codes as pay",
-        RPay,
+        pay_hook::rpay,
+    );
+    plugin.add_async_rpc_method(
+        "barqrouteinfo",
+        "",
+        "Get route information using Barq",
+        methods::route_info::barq_route_info,
+    );
+    plugin.add_async_rpc_method(
+        "barqsyncgossip",
+        "",
+        "Refresh the LDK network graph from rapid gossip sync and the gossip_store",
+        methods::sync::barq_sync_gossip,
     );
     plugin.register_notification("shutdown", OnShutdown);
     // The hook must be declared in the manifest, before options are known:
@@ -268,7 +235,7 @@ pub fn build_plugin() -> anyhow::Result<Plugin<State>> {
             Some(vec!["cln-xpay".to_owned()]),
             None,
             Some(vec![serde_json::json!("pay")]),
-            PayHook,
+            AsyncCommand::new(pay_hook::pay_hook),
         );
         plugin.state.pay_hook_registered = true;
     }
@@ -391,47 +358,13 @@ fn on_init(plugin: &mut Plugin<State>) -> Value {
     }
     if interval > 0 {
         ctx.start_background_sync(
-            plugin.state.runtime.handle(),
+            &tokio::runtime::Handle::current(),
             Duration::from_secs(interval as u64),
         );
     }
     plugin.state.ctx = Some(ctx);
 
     serde_json::json!({})
-}
-
-#[derive(Clone)]
-struct BarqPay;
-
-impl RPCCommand<State> for BarqPay {
-    fn call_deferred(&self, plugin: &mut Plugin<State>, request: Value, responder: Responder) {
-        methods::pay::barq_pay(plugin, request, responder)
-    }
-}
-
-#[derive(Clone)]
-struct RPay;
-
-impl RPCCommand<State> for RPay {
-    fn call_deferred(&self, plugin: &mut Plugin<State>, request: Value, responder: Responder) {
-        methods::pay_hook::rpay(plugin, request, responder)
-    }
-}
-
-#[rpc_method(
-    rpc_name = "barqrouteinfo",
-    description = "Get route information using Barq"
-)]
-fn barq_route_info(plugin: &mut Plugin<State>, request: Value) -> Result<Value, PluginError> {
-    methods::route_info::barq_route_info(plugin, request)
-}
-
-#[rpc_method(
-    rpc_name = "barqsyncgossip",
-    description = "Refresh the LDK network graph from rapid gossip sync and the gossip_store"
-)]
-fn barq_sync_gossip(plugin: &mut Plugin<State>, request: Value) -> Result<Value, PluginError> {
-    methods::sync::barq_sync_gossip(plugin, request)
 }
 
 /// lightningd asks subscribed plugins to exit on shutdown: save the graph

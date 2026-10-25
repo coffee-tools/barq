@@ -7,7 +7,6 @@ use serde_json::Value;
 
 use clightningrpc_plugin::error;
 use clightningrpc_plugin::errors::PluginError;
-use clightningrpc_plugin::plugin::Plugin;
 
 use barq_common::secp256k1::PublicKey;
 use barq_common::strategy::{Payee, RouteInput, StrategyKind};
@@ -68,11 +67,10 @@ pub struct BarqRouteInfoResponse {
 }
 
 /// Barq RPC method to get route information
-pub fn barq_route_info(plugin: &mut Plugin<State>, request: Value) -> Result<Value, PluginError> {
+pub async fn barq_route_info(state: State, request: Value) -> Result<Value, PluginError> {
     log::info!("barqrouteinfo called with request: {}", request);
     let request: BarqRouteInfoRequest = json::from_value(request).map_err(|err| error!("{err}"))?;
-    let state = plugin.state.clone();
-    plugin.state.block_on(route_info(state, request))
+    route_info(state, request).await
 }
 
 async fn route_info(state: State, request: BarqRouteInfoRequest) -> Result<Value, PluginError> {
@@ -96,7 +94,7 @@ async fn route_info(state: State, request: BarqRouteInfoRequest) -> Result<Value
         strategy: kind,
         excluded_channels: vec![],
     };
-    let ranking = context::rank(state, &input)?;
+    let ranking = context::rank(state, &input).await?;
     let Some(best) = ranking.best() else {
         return Err(error!("No route found: {}", ranking.explain()));
     };
