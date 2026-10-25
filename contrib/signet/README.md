@@ -52,3 +52,52 @@ Then:
 
 Each check prints PASS or FAIL in `signet-sim.log`; the exit status is
 non-zero when one fails.
+
+## Rapid gossip sync
+
+alice normally reads both Core Lightning's gossip_store and the Mutinynet
+rapid gossip sync server (`https://rgs.mutinynet.com/snapshot`). The `rgs`
+checks restart alice with `barq-cln-gossip=false`, so every channel barq
+routes over, beyond alice's own, comes from the snapshots:
+
+- a full sync from an empty graph holding every channel of the server's
+  full snapshot (Mutinynet's server knows fewer channels than Core
+  Lightning's gossip)
+- the next sync continuing from the last applied timestamp, and a restart
+  continuing from the persisted one
+- routes to a sample of public nodes compared with Core Lightning's
+  `getroute` (`RGS_SAMPLE`, default 40)
+- BOLT11 and BOLT12 payments, a 205 failure, concurrent payments and the
+  faucet's node, all routed over RGS data
+- an unreachable server (the gossip_store takes over), another chain's
+  server and a server answering something else
+
+```bash
+./signet-sim.sh rgs           # once the channels of `all` and `public` exist
+./signet-sim.sh rgs-soak 12   # 12 hours of syncs, routes and payments
+```
+
+Both put alice back on its usual configuration when they end.
+
+## Paying an LDK node
+
+The `lampo` checks pay a [lampo](https://github.com/vincenzopalazzo/lampo.rs)
+node, an LDK implementation, that alice has no channel with: carol opens a
+channel to it, and so does the faucet's node (`mutinynet-cli channel
+<lampo id> <sats> --push-amount 0`, once lampo is connected to it). Run
+lampo with `network=signet` against the same bitcoind, and point
+`LAMPO_CLI` at a script that runs `lampo-cli --url <its API>`. The checks
+pay BOLT11 invoices (with an amount, without one, with `rpay`), BOLT12
+offers, an expired invoice (207), two invoices at once, and one through the
+faucet with carol excluded. lampo sends no node announcement without a public
+address, so the payer fetches BOLT12 invoices over a plain peer connection
+to lampo (`LAMPO_ADDR`, no channel). Every payment must be routed by LDK's router (barq's
+`probabilistic` strategy). With `PAYER=bob` (bob started with
+`BARQ_NODES="alice bob"`) the payer reads RGS and Core Lightning's gossip;
+with `RGS_ONLY=1` and alice during `rgs-soak`, rapid gossip sync alone, so
+setup also measures how long the RGS server takes to publish lampo's
+channels.
+
+```bash
+./signet-sim.sh lampo
+```

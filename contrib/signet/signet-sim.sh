@@ -3,19 +3,28 @@
 #
 #   signet-sim.sh              wait for funds, open channels, run every check
 #   signet-sim.sh checks       only the payment checks (channels already open)
+#   signet-sim.sh public       the checks over the faucet's public node
+#   signet-sim.sh rgs          rapid gossip sync: alice routes and pays with
+#                              the Mutinynet RGS snapshots only
+#   signet-sim.sh rgs-soak H   H hours (default 6) of RGS-only syncs, routes
+#                              and payments every 10 minutes
+#   signet-sim.sh lampo        pay a lampo (LDK) node that the payer (PAYER,
+#                              default alice) has no
+#                              channel with, through carol and the faucet
 #
 # alice and carol must hold Mutinynet coins (faucet.mutinynet.com). Each check
 # prints PASS or FAIL; the summary and exit status say whether barq paid,
 # failed and recorded payments as expected on the real signet.
 #
-# Env: CHANNEL_SAT (50000), MIN_FUNDS_SAT (60000), ROOT (~/barq-signet)
+# Env: CHANNEL_SAT (50000), MIN_FUNDS_SAT (60000), ROOT (~/barq-signet),
+#      LOG ($ROOT/signet-sim.log), LAMPO_CLI ($ROOT/lampo/cli.sh)
 set -uo pipefail
 
 ROOT=${ROOT:-$HOME/barq-signet}
 NODES=$ROOT/nodes.sh
 CHANNEL_SAT=${CHANNEL_SAT:-50000}
 MIN_FUNDS_SAT=${MIN_FUNDS_SAT:-60000}
-LOG=$ROOT/signet-sim.log
+LOG=${LOG:-$ROOT/signet-sim.log}
 PASS=0; FAIL=0; FAILED=()
 
 say() { echo "[$(date +%H:%M:%S)] $*" | tee -a "$LOG"; }
@@ -24,7 +33,8 @@ jq_() { python3 -c "import json,sys;d=json.load(sys.stdin);print($1)"; }
 pass() { PASS=$((PASS + 1)); say "PASS $1"; }
 fail() { FAIL=$((FAIL + 1)); FAILED+=("$1"); say "FAIL $1: ${2:-}"; }
 # check NAME CMD...: CMD's exit status decides.
-check() { local name=$1; shift; local out; if out=$("$@" 2>&1); then pass "$name"; else fail "$name" "$(echo "$out" | tail -3 | tr '\n' ' ' | cut -c1-300)"; fi; }
+# A passing check's last output line, if any, goes to the log with it.
+check() { local name=$1; shift; local out last; if out=$("$@" 2>&1); then last=$(echo "$out" | tail -1 | cut -c1-300); pass "$name${last:+ ($last)}"; else fail "$name" "$(echo "$out" | tail -3 | tr '\n' ' ' | cut -c1-300)"; fi; }
 id() { cli "$1" getinfo | jq_ 'd["id"]'; }
 onchain_sat() { cli "$1" listfunds | jq_ 'sum(o["amount_msat"] for o in d["outputs"] if o["status"]=="confirmed")//1000'; }
 
@@ -253,10 +263,348 @@ checks_public() {
   [ "$FAIL" -eq 0 ]
 }
 
+
+# --- rapid gossip sync: alice's barq without Core Lightning's gossip, so
+# every channel it routes over beyond its own comes from the RGS snapshots.
+ALICE_LOG=$ROOT/nodes/alice/log
+BARQ_DATA=$ROOT/nodes/alice/signet/barq
+RGS_SAMPLE=${RGS_SAMPLE:-40}
+
+# restart_alice [VAR=VALUE...]: restart alice with these nodes.sh settings.
+# The daemonized lightningd must not inherit check's output pipe.
+restart_alice() {
+  "$NODES" stop alice >/dev/null 2>&1 < /dev/null
+  local i; for i in $(seq 60); do cli alice getinfo >/dev/null 2>&1 || break; sleep 1; done
+  env "$@" "$NODES" start alice >/dev/null 2>&1 < /dev/null || return 1
+  cli alice connect "$(id carol)@127.0.0.1:19848" >/dev/null 2>&1
+  cli alice connect "$FAUCET_ADDR" >/dev/null 2>&1
+  wait_for 600 "alice -> carol reconnected" channel_normal alice carol
+}
+rgs_only() { restart_alice BARQ_CLN_GOSSIP=false "$@"; }
+# The rapid gossip sync lines of alice's log since barq last started.
+rgs_log() {
+  python3 - "$ALICE_LOG" <<'EOF'
+import sys
+lines = open(sys.argv[1], errors="replace").read().splitlines()
+# barq loads its graph right before it logs that it is initialized.
+start = max([i for i, l in enumerate(lines) if "barq initialized on" in l] or [0])
+loads = [i for i, l in enumerate(lines[:start]) if "loaded network graph" in l and start - i < 200]
+start = loads[-1] if loads else start
+for l in lines[start:]:
+    if "rapid gossip sync" in l or "loaded network graph" in l:
+        print(l)
+EOF
+}
+rgs_synced() { # alice's barq applied a snapshot since it started
+  rgs_log | grep -q "rapid gossip sync: applied"
+}
+
+# The channel announcements in the server's full snapshot.
+rgs_snapshot_channels() {
+  curl -s --max-time 60 "${RGS:-https://rgs.mutinynet.com/snapshot}/0" | python3 -c '
+import struct, sys
+b = sys.stdin.buffer.read()
+nodes, = struct.unpack(">I", b[40:44])
+o = 44 + 33 * nodes
+print(struct.unpack(">I", b[o:o + 4])[0])
+'
+}
+rgs_full_sync() {
+  # From an empty graph: barq holds every channel of the server's full
+  # snapshot (the server may know fewer than Core Lightning's gossip).
+  local r ours cln snap
+  r=$(cli alice barqsyncgossip) || { echo "$r"; return 1; }
+  cln=$(cli alice listchannels | jq_ 'len({c["short_channel_id"] for c in d["channels"]})')
+  snap=$(rgs_snapshot_channels) || return 1
+  ours=$(echo "$r" | jq_ 'd["channels"]')
+  echo "$r" | jq_ '"ok" if not d["gossip_store"]["enabled"] and d["rapid_gossip_sync"].get("last_sync_timestamp", 0) > '"$(( $(date +%s) - 14 * 86400 ))"' else d' | grep -q ok || return 1
+  [ "$ours" -ge "$snap" ] || { echo "barq holds $ours channels, the snapshot announces $snap"; return 1; }
+  echo "barq holds $ours channels, the server's snapshot announces $snap, Core Lightning's gossip knows $cln"
+}
+rgs_next_fetch_continues() {
+  # The next sync asks for the snapshot since the last one applied.
+  cli alice barqsyncgossip >/dev/null || return 1
+  rgs_log | python3 -c '
+import re, sys
+lines = sys.stdin.read().splitlines()
+fetches = [i for i, l in enumerate(lines) if "rapid gossip sync: fetching" in l]
+applied = [(i, int(re.search(r"new timestamp (\d+)", l).group(1))) for i, l in enumerate(lines) if "new timestamp" in l]
+last = fetches[-1]
+before = [ts for i, ts in applied if i < last]
+fetched = int(re.search(r"/(\d+)\s*$", lines[last]).group(1))
+if not before or fetched != before[-1]:
+    sys.exit(f"fetched from {fetched} after applying {before[-3:]}")
+print(f"fetched from {fetched}, the last timestamp applied")
+'
+}
+rgs_restart_continues() {
+  # After a restart barq loads the graph and continues from its timestamp.
+  local before; before=$(cli alice barqsyncgossip | jq_ 'd["rapid_gossip_sync"]["last_sync_timestamp"]') || return 1
+  rgs_only || return 1
+  wait_for 300 "the first sync after the restart" rgs_synced || return 1
+  rgs_log | python3 -c '
+import re, sys
+before = int(sys.argv[1])
+lines = sys.stdin.read().splitlines()
+loaded = [l for l in lines if "loaded network graph" in l]
+fetch = next(l for l in lines if "rapid gossip sync: fetching" in l)
+fetched = int(re.search(r"/(\d+)\s*$", fetch).group(1))
+if not loaded or f"Some({before})" not in loaded[-1] or fetched != before:
+    sys.exit(f"before {before}, loaded {loaded[-1:]}, fetched from {fetched}")
+print(f"continued from {before}")
+' "$before"
+}
+rgs_routes_like_cln() {
+  # Route to a sample of public nodes with barq (RGS only) and with Core
+  # Lightning (its own gossip): barq must find most of the routes Core
+  # Lightning finds, over channels Core Lightning knows too.
+  python3 - "$NODES" "$RGS_SAMPLE" "$(id alice)" <<'EOF'
+import json, random, subprocess, sys
+nodes, sample, alice = sys.argv[1], int(sys.argv[2]), sys.argv[3]
+def cli(*args):
+    p = subprocess.run([nodes, "cli", "alice", *args], capture_output=True, text=True)
+    return json.loads(p.stdout) if p.returncode == 0 else None
+channels = cli("listchannels")["channels"]
+known = {c["short_channel_id"] for c in channels}
+dests = sorted({c["destination"] for c in channels if c["active"]} - {alice})
+random.seed()
+dests = random.sample(dests, min(sample, len(dests)))
+cln_ok = barq_ok = both = 0
+unknown_hops = []
+missed = []
+for dest in dests:
+    cln = cli("getroute", dest, "10000", "1")
+    barq = cli("-k", "barqrouteinfo", f"dest_pubkey={dest}", "amount_msat=10000")
+    cln_ok += cln is not None
+    barq_ok += barq is not None
+    both += cln is not None and barq is not None
+    if cln is not None and barq is None:
+        missed.append(dest[:16])
+    if barq is not None:
+        unknown_hops += [h["channel"] for h in barq["route"][1:] if h["channel"] not in known]
+print(f"{len(dests)} nodes: Core Lightning routes to {cln_ok}, barq to {barq_ok}, both {both}; "
+      f"barq missed {missed[:5]}; hops Core Lightning does not know: {unknown_hops[:5]}")
+if cln_ok and both * 10 < cln_ok * 8:
+    sys.exit("barq found fewer than 80% of Core Lightning's routes")
+if len(unknown_hops) > 2:
+    sys.exit("barq routed over channels Core Lightning does not know")
+EOF
+}
+rgs_server_down() {
+  # An unreachable RGS server: syncs report it, payments still route with
+  # the gossip_store.
+  restart_alice RGS=http://127.0.0.1:9/snapshot || return 1
+  cli alice barqsyncgossip | jq_ '"ok" if "error" in d["rapid_gossip_sync"] and d["gossip_store"]["enabled"] else d' | grep -q ok || return 1
+  bolt11_barqpay
+}
+rgs_wrong_chain() {
+  # A server for another chain: its snapshots are refused, the graph is kept.
+  restart_alice RGS=https://rapidsync.lightningdevkit.org/snapshot BARQ_CLN_GOSSIP=false || return 1
+  local r; r=$(cli alice barqsyncgossip) || { echo "$r"; return 1; }
+  echo "$r" | jq_ '"ok" if "chain hash" in d["rapid_gossip_sync"].get("error", "") and d["channels"] > 100 else d' | grep -q ok || { echo "$r"; return 1; }
+  bolt11_barqpay
+}
+rgs_garbage() {
+  # A server answering something that is not a snapshot.
+  restart_alice RGS=https://faucet.mutinynet.com BARQ_CLN_GOSSIP=false || return 1
+  local r; r=$(cli alice barqsyncgossip) || { echo "$r"; return 1; }
+  echo "$r" | jq_ '"ok" if "error" in d["rapid_gossip_sync"] and d["channels"] > 100 else d' | grep -q ok || { echo "$r"; return 1; }
+  cli alice getinfo >/dev/null
+}
+
+setup_rgs() {
+  say "== setup: alice on rapid gossip sync only, from an empty graph"
+  "$NODES" stop alice >/dev/null 2>&1 < /dev/null; sleep 5
+  rm -f "$BARQ_DATA"/network_graph.*.bin "$BARQ_DATA"/scorer.*.bin
+  rgs_only || exit 1
+  wait_for 600 "the first rapid gossip sync" rgs_synced || exit 1
+  say "synced: $(rgs_log | grep applied | tail -1 | sed 's/.*rapid gossip sync: //')"
+}
+checks_rgs() {
+  say "== rapid gossip sync checks"
+  check "RGS-only full sync from an empty graph" rgs_full_sync
+  check "the next sync continues from the last timestamp" rgs_next_fetch_continues
+  check "RGS-only routes match Core Lightning's" rgs_routes_like_cln
+  check "BOLT11 over two hops learned from RGS" bolt11_barqpay
+  check "BOLT12 over two hops learned from RGS" bolt12_pay
+  check "BOLT12 any-amount offer learned from RGS" bolt12_any_amount
+  check "unroutable amount fails with 205 on RGS" too_large
+  check "two payments at once on RGS" concurrent_payments
+  check "pay the faucet node on RGS" pay_public_node
+  check "a restart continues from the persisted timestamp" rgs_restart_continues
+  check "an unreachable RGS server falls back to the gossip_store" rgs_server_down
+  check "another chain's snapshots are refused" rgs_wrong_chain
+  check "a server answering garbage is reported" rgs_garbage
+  say "restoring alice's configuration"
+  restart_alice || say "alice did not restart"
+  say "== $PASS passed, $FAIL failed${FAILED:+: ${FAILED[*]}}"
+  [ "$FAIL" -eq 0 ]
+}
+
+rgs_soak() { # HOURS
+  # Leave alice on RGS only, syncing every 10 minutes, and keep checking
+  # that it advances, routes like Core Lightning and pays.
+  local hours=${1:-6} round=0 end last=0 ts
+  end=$((SECONDS + hours * 3600))
+  say "== rapid gossip sync soak for ${hours}h, from an empty graph"
+  "$NODES" stop alice >/dev/null 2>&1 < /dev/null; sleep 5
+  rm -f "$BARQ_DATA"/network_graph.*.bin "$BARQ_DATA"/scorer.*.bin
+  rgs_only BARQ_SYNC_INTERVAL=600 || exit 1
+  wait_for 600 "the first rapid gossip sync" rgs_synced || exit 1
+  while [ $SECONDS -lt $end ]; do
+    round=$((round + 1))
+    ts=$(cli alice barqsyncgossip | jq_ 'd["rapid_gossip_sync"].get("last_sync_timestamp", 0)')
+    if [ "${ts:-0}" -ge "$last" ]; then pass "round $round: timestamp $ts"; else fail "round $round" "timestamp went back from $last to $ts"; fi
+    last=${ts:-0}
+    check "round $round: next sync continues" rgs_next_fetch_continues
+    RGS_SAMPLE=15 check "round $round: routes like Core Lightning" rgs_routes_like_cln
+    check "round $round: BOLT11 payment" bolt11_barqpay
+    check "round $round: BOLT12 payment" bolt12_pay
+    sleep 600
+  done
+  say "restoring alice's configuration"
+  restart_alice || say "alice did not restart"
+  say "== $PASS passed, $FAIL failed${FAILED:+: ${FAILED[*]}}"
+  [ "$FAIL" -eq 0 ]
+}
+
+
+# --- lampo: an LDK node (github.com/vincenzopalazzo/lampo.rs) that alice
+# has no channel with: carol and the faucet's node have channels to it.
+LAMPO_CLI=${LAMPO_CLI:-$ROOT/lampo/cli.sh}
+# The node whose barq pays lampo: alice, or bob started with BARQ_NODES.
+PAYER=${PAYER:-alice}
+LAMPO_ADDR=${LAMPO_ADDR:-127.0.0.1:19849}
+lampo() { "$LAMPO_CLI" "$@"; }
+lampo_id() { lampo getinfo | jq_ 'd["node_id"]'; }
+lampo_invoice() { # MSAT [ARGS...]
+  local msat=$1; shift
+  lampo invoice --amount_msat "$msat" --description "barq $RANDOM" "$@" | jq_ 'd["bolt11"]'
+}
+lampo_ready() { # the payer's barq routes to lampo without a channel of its own
+  cli "$PAYER" barqsyncgossip >/dev/null 2>&1
+  cli "$PAYER" -k barqrouteinfo dest_pubkey="$(lampo_id)" amount_msat=10000 | jq_ '"ok" if len(d["route"]) >= 2 else d' | grep -q ok
+}
+not_direct() {
+  cli "$PAYER" listpeerchannels "$(lampo_id)" | jq_ '"ok" if not d["channels"] else d' | grep -q ok || { echo "$PAYER has a channel with lampo"; return 1; }
+}
+# paid_lampo RESULT: barq's result is a completed payment to lampo; prints
+# the route. A BOLT12 payment ends in lampo's blinded path, whose last
+# blinded node id is the destination barq reports.
+paid_lampo() {
+  echo "$1" | jq_ '"ok" if d["status"]=="complete" and (d.get("invoice_type")=="bolt12" or d.get("destination", "'"$(lampo_id)"'")=="'"$(lampo_id)"'") else d' | grep -q ok || { echo "$1"; return 1; }
+  # Routed by LDK's router (barq's `probabilistic` strategy) over barq's graph.
+  local hash; hash=$(echo "$1" | jq_ 'd["payment_hash"]')
+  cli "$PAYER" -k barqinspect payment_hash="$hash" | jq_ '"ok" if d["payments"][-1]["attempts"][-1]["strategy"]=="probabilistic" else d["payments"][-1]["attempts"]' | grep -q ok || { echo "not routed by LDK's router"; return 1; }
+  local blinded route
+  blinded=$(echo "$1" | jq_ 'd.get("blinded_hops", 0)')
+  route=$(cli "$PAYER" -k barqinspect payment_hash="$hash" | jq_ '" -> ".join(h["id"][:10] for h in d["payments"][-1]["attempts"][-1]["route"])')
+  [ "$blinded" -gt 0 ] && route="$route + $blinded blinded hops"
+  echo "LDK route $route"
+}
+
+lampo_bolt11() {
+  not_direct || return 1
+  local r; r=$(cli "$PAYER" -k barqpay invoice="$(lampo_invoice 21000)") || { echo "$r"; return 1; }
+  paid_lampo "$r"
+}
+lampo_rpay() {
+  local r; r=$(cli "$PAYER" rpay "$(lampo_invoice 16000)") || { echo "$r"; return 1; }
+  paid_lampo "$r"
+}
+lampo_amountless() {
+  local inv r
+  inv=$(lampo invoice --description "barq any $RANDOM" | jq_ 'd["bolt11"]')
+  r=$(cli "$PAYER" -k barqpay invoice="$inv" amount_msat=17000) || { echo "$r"; return 1; }
+  echo "$r" | jq_ '"ok" if d["amount_msat"]==17000 else d' | grep -q ok || { echo "$r"; return 1; }
+  paid_lampo "$r"
+}
+# lampo sends no node announcement without a public address, so Core
+# Lightning cannot route onion messages to it: fetch invoices over a peer
+# connection (no channel), and pay over the channels as usual.
+lampo_peer() { cli "$PAYER" connect "$(lampo_id)@$LAMPO_ADDR" >/dev/null; }
+lampo_bolt12() {
+  local offer inv r
+  lampo_peer || return 1
+  offer=$(lampo offer --amount_msat 13000 --description "barq bolt12 $RANDOM" | jq_ 'd["bolt12"]')
+  inv=$(cli "$PAYER" fetchinvoice "$offer" | jq_ 'd["invoice"]') || return 1
+  r=$(cli "$PAYER" -k barqpay invoice="$inv") || { echo "$r"; return 1; }
+  echo "$r" | jq_ '"ok" if d["invoice_type"]=="bolt12" else d' | grep -q ok || { echo "$r"; return 1; }
+  paid_lampo "$r"
+}
+lampo_bolt12_any() {
+  local offer inv r
+  lampo_peer || return 1
+  offer=$(lampo offer --description "barq bolt12 any $RANDOM" | jq_ 'd["bolt12"]')
+  inv=$(cli "$PAYER" fetchinvoice "$offer" 9000msat | jq_ 'd["invoice"]') || return 1
+  r=$(cli "$PAYER" -k barqpay invoice="$inv") || { echo "$r"; return 1; }
+  paid_lampo "$r"
+}
+lampo_expired() {
+  local inv; inv=$(lampo_invoice 5000 --expiring_in 1)
+  sleep 3
+  expect_error 207 "$PAYER" rpay "$inv"
+}
+lampo_concurrent() {
+  local a b out1 out2 p1 p2 f
+  a=$(lampo_invoice 6000); b=$(lampo_invoice 7000)
+  out1=$(mktemp); out2=$(mktemp)
+  cli "$PAYER" rpay "$a" > "$out1" 2>&1 & p1=$!
+  cli "$PAYER" rpay "$b" > "$out2" 2>&1 & p2=$!
+  wait $p1 $p2
+  for f in "$out1" "$out2"; do
+    jq_ 'd["status"]' < "$f" | grep -q complete || { echo "payment failed: $(head -c 300 "$f")"; return 1; }
+  done
+  rm -f "$out1" "$out2"
+}
+lampo_via_faucet() {
+  # Leave carol out: the payment goes through the faucet to lampo.
+  lampo channels | jq_ '"ok" if any(c["peer_id"]=="'"$FAUCET_NODE"'" and c["ready"] for c in d["channels"]) else ""' | grep -q ok || { echo "no faucet channel to lampo"; return 1; }
+  local r; r=$(cli "$PAYER" -k rpay bolt11="$(lampo_invoice 11000)" exclude='["'"$(id carol)"'"]') || { echo "$r"; return 1; }
+  paid_lampo "$r" || return 1
+  # barq's history has the route that completed: it starts at the faucet.
+  cli "$PAYER" -k barqinspect payment_hash="$(echo "$r" | jq_ 'd["payment_hash"]')" | jq_ '"ok" if d["payments"][-1]["attempts"][-1]["route"][0]["id"]=="'"$FAUCET_NODE"'" else d["payments"][-1]["attempts"]' | grep -q ok
+}
+
+# The payer's gossip sources, as barq reports them.
+payer_sources() {
+  cli "$PAYER" barqsyncgossip | jq_ '"rapid gossip sync %s (timestamp %s), gossip_store %s, %d channels" % ("on" if d["rapid_gossip_sync"]["enabled"] else "off", d["rapid_gossip_sync"].get("last_sync_timestamp"), "on" if d["gossip_store"]["enabled"] else "off", d["channels"])'
+}
+# With RGS_ONLY=1 the payer must route on rapid gossip sync alone.
+payer_rgs_only() {
+  cli "$PAYER" barqsyncgossip | jq_ '"ok" if d["rapid_gossip_sync"]["enabled"] and "error" not in d["rapid_gossip_sync"] and not d["gossip_store"]["enabled"] else d' | grep -q ok || return 1
+  payer_sources
+}
+
+setup_lampo() {
+  say "== setup: $PAYER pays lampo $(lampo_id), reached through carol and the faucet"
+  say "$PAYER's barq: $(payer_sources)"
+  local start=$SECONDS
+  wait_for 10800 "barq to route to lampo" lampo_ready || exit 1
+  say "barq routes to lampo after $((SECONDS - start))s: $(payer_sources)"
+}
+checks_lampo() {
+  say "== lampo checks"
+  [ "${RGS_ONLY:-0}" = 1 ] && check "$PAYER routes on rapid gossip sync only" payer_rgs_only
+  check "BOLT11 to lampo over other nodes" lampo_bolt11
+  check "BOLT11 to lampo with rpay" lampo_rpay
+  check "amountless BOLT11 to lampo" lampo_amountless
+  check "BOLT12 offer of lampo" lampo_bolt12
+  check "BOLT12 any-amount offer of lampo" lampo_bolt12_any
+  check "expired lampo invoice fails with 207" lampo_expired
+  check "two payments to lampo at once" lampo_concurrent
+  check "lampo through the faucet with carol excluded" lampo_via_faucet
+  say "== $PASS passed, $FAIL failed${FAILED:+: ${FAILED[*]}}"
+  [ "$FAIL" -eq 0 ]
+}
+
 case "${1:-all}" in
   all) setup && checks ;;
   checks) checks ;;
   setup) setup ;;
   public) setup_public && checks_public ;;
-  *) echo "usage: $0 [all|setup|checks|public]"; exit 1 ;;
+  rgs) setup_rgs && checks_rgs ;;
+  rgs-soak) rgs_soak "${2:-6}" ;;
+  lampo) setup_lampo && checks_lampo ;;
+  *) echo "usage: $0 [all|setup|checks|public|rgs|rgs-soak [HOURS]|lampo]"; exit 1 ;;
 esac
