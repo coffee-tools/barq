@@ -91,7 +91,12 @@ pay BOLT11 invoices (with an amount, without one, with `rpay`), BOLT12
 offers, an expired invoice (207), two invoices at once, and one through the
 faucet with carol excluded. lampo sends no node announcement without a public
 address, so the payer fetches BOLT12 invoices over a plain peer connection
-to lampo (`LAMPO_ADDR`, no channel).
+to lampo (`LAMPO_ADDR`, no channel). Every payment must be routed by LDK's router (barq's
+`probabilistic` strategy). With `PAYER=bob` (bob started with
+`BARQ_NODES="alice bob"`) the payer reads RGS and Core Lightning's gossip;
+with `RGS_ONLY=1` and alice during `rgs-soak`, rapid gossip sync alone, so
+setup also measures how long the RGS server takes to publish lampo's
+channels.
 
 ```bash
 ./signet-sim.sh lampo

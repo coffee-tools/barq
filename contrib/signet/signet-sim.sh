@@ -446,7 +446,9 @@ rgs_soak() { # HOURS
   # that it advances, routes like Core Lightning and pays.
   local hours=${1:-6} round=0 end last=0 ts
   end=$((SECONDS + hours * 3600))
-  say "== rapid gossip sync soak for ${hours}h"
+  say "== rapid gossip sync soak for ${hours}h, from an empty graph"
+  "$NODES" stop alice >/dev/null 2>&1 < /dev/null; sleep 5
+  rm -f "$BARQ_DATA"/network_graph.*.bin "$BARQ_DATA"/scorer.*.bin
   rgs_only BARQ_SYNC_INTERVAL=600 || exit 1
   wait_for 600 "the first rapid gossip sync" rgs_synced || exit 1
   while [ $SECONDS -lt $end ]; do
@@ -491,7 +493,14 @@ not_direct() {
 # blinded node id is the destination barq reports.
 paid_lampo() {
   echo "$1" | jq_ '"ok" if d["status"]=="complete" and (d.get("invoice_type")=="bolt12" or d.get("destination", "'"$(lampo_id)"'")=="'"$(lampo_id)"'") else d' | grep -q ok || { echo "$1"; return 1; }
-  echo "$1" | jq_ '"route " + " -> ".join(h["id"][:10] for h in d.get("route", [])) + (" + %d blinded hops" % d["blinded_hops"] if d.get("blinded_hops") else "")'
+  # Routed by LDK's router (barq's `probabilistic` strategy) over barq's graph.
+  local hash; hash=$(echo "$1" | jq_ 'd["payment_hash"]')
+  cli "$PAYER" -k barqinspect payment_hash="$hash" | jq_ '"ok" if d["payments"][-1]["attempts"][-1]["strategy"]=="probabilistic" else d["payments"][-1]["attempts"]' | grep -q ok || { echo "not routed by LDK's router"; return 1; }
+  local blinded route
+  blinded=$(echo "$1" | jq_ 'd.get("blinded_hops", 0)')
+  route=$(cli "$PAYER" -k barqinspect payment_hash="$hash" | jq_ '" -> ".join(h["id"][:10] for h in d["payments"][-1]["attempts"][-1]["route"])')
+  [ "$blinded" -gt 0 ] && route="$route + $blinded blinded hops"
+  echo "LDK route $route"
 }
 
 lampo_bolt11() {
@@ -557,13 +566,26 @@ lampo_via_faucet() {
   cli "$PAYER" -k barqinspect payment_hash="$(echo "$r" | jq_ 'd["payment_hash"]')" | jq_ '"ok" if d["payments"][-1]["attempts"][-1]["route"][0]["id"]=="'"$FAUCET_NODE"'" else d["payments"][-1]["attempts"]' | grep -q ok
 }
 
+# The payer's gossip sources, as barq reports them.
+payer_sources() {
+  cli "$PAYER" barqsyncgossip | jq_ '"rapid gossip sync %s (timestamp %s), gossip_store %s, %d channels" % ("on" if d["rapid_gossip_sync"]["enabled"] else "off", d["rapid_gossip_sync"].get("last_sync_timestamp"), "on" if d["gossip_store"]["enabled"] else "off", d["channels"])'
+}
+# With RGS_ONLY=1 the payer must route on rapid gossip sync alone.
+payer_rgs_only() {
+  cli "$PAYER" barqsyncgossip | jq_ '"ok" if d["rapid_gossip_sync"]["enabled"] and "error" not in d["rapid_gossip_sync"] and not d["gossip_store"]["enabled"] else d' | grep -q ok || return 1
+  payer_sources
+}
+
 setup_lampo() {
   say "== setup: $PAYER pays lampo $(lampo_id), reached through carol and the faucet"
+  say "$PAYER's barq: $(payer_sources)"
+  local start=$SECONDS
   wait_for 10800 "barq to route to lampo" lampo_ready || exit 1
-  say "barq routes to lampo"
+  say "barq routes to lampo after $((SECONDS - start))s: $(payer_sources)"
 }
 checks_lampo() {
   say "== lampo checks"
+  [ "${RGS_ONLY:-0}" = 1 ] && check "$PAYER routes on rapid gossip sync only" payer_rgs_only
   check "BOLT11 to lampo over other nodes" lampo_bolt11
   check "BOLT11 to lampo with rpay" lampo_rpay
   check "amountless BOLT11 to lampo" lampo_amountless
